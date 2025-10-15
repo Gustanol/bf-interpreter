@@ -8,14 +8,18 @@
         .endr
     filename:
         .asciz "tests/main.bf" # initialize "filename" variable to store the name of the file it will be open
+    tape_index_code: .quad 0
+    current_cell: .quad 0
+    cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
 
 # instructions section
 .section .text
-    .global _start
+    .globl _start
 
 # section used to declare a memory segment to a uninitialized static data
 .section .bss
     stat_buf: .space 144 # reserve 144 bytes
+    buf_char: .space 1
 
 _start:
     # in here, it will define the valid entrances of BF in `jmp_table`
@@ -37,12 +41,13 @@ _start:
     # therefore, to access a value stored within the table, we need to get its value from the address of the table itself
 
     call load_file # call label to open the file (filename)
-    call interpret # call label to interpret the code stored
+    call create_cell_mmap # call label to create a mmap to store all cells of the program
+    call interpret_loop # call label to interpret the code stored
     call end_program # call label to end the program execution
 
 load_file:
     movq $2, %rax # sys_open
-    # leaq filename, %rdi # uses lea (load effective address) to load the memory address of `filename` into rdi
+    movq $filename, %rdi # loads the memory address of `filename` into rdi
     xor %rsi, %rsi # make rsi null to represents zero flag (read only)
     xor %rdx, %rdx
     syscall # used to call kernel to execute the given syscall
@@ -58,10 +63,11 @@ load_file:
     movq %r12, %rdi # uses the stored file descriptor
     leaq stat_buf, %rsi # copies `stat_buf` variable pointer into rsi
     syscall
+
     testq %rax, %rax
     js error
 
-    movq stat_buf(%rip), %rax
+    leaq stat_buf(%rip), %rax
     movq 48(%rax), %r13 # r13 will store the file size
     # size is stored at offset 48 of the buffer because of the struct he populates
 
@@ -98,7 +104,7 @@ load_file:
     # Flags:
     # MAP_SHARED = 1: changes affect the file (shared)
     # MAP_PRIVATE = 2: changes does not affect the file, it's kept only in memory (copy-on-write)
-    # MAP_PRIVATE = 0x20: not a file, just memory (malloc)
+    # MAP_ANONYMOUS = 0x20: not a file, just memory (malloc)
 
     movq %r12, %r8 # define file descriptor that will be passed in mmap
     xor %r9, %r9 # offset = 0
@@ -112,22 +118,93 @@ load_file:
     movq $3, %rax # sys_close
     movq %r12, %rdi # file descriptor that will be closed
     syscall
+    ret
 
-interpret:
+create_cell_mmap:
+    movq $9, %rax # sys_mmap
+    xor %rdi, %rdi # kernel chooses address
+    movq $cell_mmap_size, %rsi # mmap size
+    movq $1, %rdx # read protection
+    movq $0x20, %r10 # MAP_ANONYMOUS: not associate to a file
+    movq $-1, %r2 # no file descriptor
+    xor %r9, %r9 # offset = 0
+    syscall
 
-clean_mmap:
+    testq %rax, %rax
+    js error
+
+    movq %rax, %r2 # %r2 = mapped cells address
+    ret
+
+interpret_loop:
+    movq tape_index_code(%rip), %r15 # loads the current code index into %r15 register
+    leaq %r14(%rip), %rdx # gets the base address value of the code storage mmap
+    movzbl (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
+
+    leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
+    movq (%rbp, %rax, 8), %rbp # gets the symbol handle label stored in jmp_table
+    incq %r15 # increases %r15
+
+    leaq %r2(%rip), %rdx # loads the base address of the cells mmap
+    call calculate_cell_index # call a label to calculate the current cell
+    movq (%rax, %rdx, 1), %rax # sums (offset + index = current cell)
+
+    call *%rbp # call label (indirect register)
+
+    movq %r15, tape_index_code(%rip)
+
+    incq %r15
+    cmpq %r13, %r15 # verifies if the the file limit was reached
+    jl interpret_loop # if lower, call interpret_loop to make a loop
+    ret
+
+# operations labels
+cmd_plus:
+    incq (%rax) # increases the value stored in %rax address
+    ret
+
+cmd_minus:
+    decq (%rax) # decreases the value stored in %rax address
+    ret
+
+cmd_dot:
+    movq %rax, %rsi # pointer to character
+    movq $1, %rax # sys_write
+    movq $1, %rdi # file descriptor: stdout
+    movq $1, %rdx # it will always have 1 byte
+    syscall
+    ret
+
+calculate_cell_index:
+    movq $2, %rax
+    movq $cell_mmap_size, %rbx # loads the stored cell mmap size
+    divq %rbx # %rbx / %rax (middle of the mmap)
+
+    movq current_cell(%rip), %rcx # loads the current cell index
+    movq (%rax, %rcx, 1), %rax # sums it to the %rax
+    ret
+
+# end program labels
+clean_mmaps:
     movq $11, %rax # sys_munmap
     movq %r14, %rdi # mmap address
     movq %r13, %rsi # mmap size
     syscall
+    
+    movq $11, %rax
+    movq %r2, %rdi
+    movq $cell_mmap_size, %rsi
+    syscall
+    ret
 
 error:
+    call clean_mmaps
     movq $60, %rax # sys_exit
     movq $1, %rdi # exit code (fail)
     syscall
 
 end_program:
-    call clean_mmap
+    call clean_mmaps
     movq $60, %rax # sys_exit
     movq $0,  %rdi # exit code (successful)
     syscall
