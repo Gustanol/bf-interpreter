@@ -1,4 +1,5 @@
 .section .data
+    expand_error_message: .ascii "2MB cells amount reached"
     # initialize a jump table with 256 spaces pointing to invalid characters
     # quad = 8 bytes
     # therefore, the table will need 2048 bytes of memory (256*8)
@@ -8,9 +9,11 @@
         .endr
     filename:
         .asciz "tests/main.bf" # initialize "filename" variable to store the name of the file it will be open
-    tape_index_code: .quad 0
-    current_cell: .quad 0
+    
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
+
+    # constants
+    .equ MAX_CELL_MMAP_SIZE, 2097152
 
 # instructions section
 .section .text
@@ -19,7 +22,12 @@
 # section used to declare a memory segment to a uninitialized static data
 .section .bss
     stat_buf: .space 144 # reserve 144 bytes
-    buf_char: .space 1
+    
+    .align 8
+    tape_base_code: .quad 0 # base address of the code mmap
+    tape_index_code: .quad 0 # current code mmap index
+    current_cell: .quad 0 # current cell index
+    cell_mmap_base: .quad 0 # it will store the current address base of the cell mmap
 
 _start:
     # in here, it will define the valid entrances of BF in `jmp_table`
@@ -47,9 +55,9 @@ _start:
 
 load_file:
     movq $2, %rax # sys_open
-    movq $filename, %rdi # loads the memory address of `filename` into rdi
-    xor %rsi, %rsi # make rsi null to represents zero flag (read only)
-    xor %rdx, %rdx
+    leaq filename(%rip), %rdi # loads the memory address of `filename` into rdi
+    xorq %rsi, %rsi # make rsi null to represents zero flag (read only)
+    xorq %rdx, %rdx
     syscall # used to call kernel to execute the given syscall
 
     testq %rax, %rax # AND operation to determine if the file was correct opened
@@ -61,7 +69,7 @@ load_file:
 
     movq $5, %rax # sys_fstat
     movq %r12, %rdi # uses the stored file descriptor
-    leaq stat_buf, %rsi # copies `stat_buf` variable pointer into rsi
+    leaq stat_buf(%rip), %rsi # copies `stat_buf` variable pointer into rsi
     syscall
 
     testq %rax, %rax
@@ -69,9 +77,9 @@ load_file:
 
     leaq stat_buf(%rip), %rax
     movq 48(%rax), %r13 # r13 will store the file size
-    # size is stored at offset 48 of the buffer because of the struct he populates
+    # size is stored at offset 48 of buffer because of the struct he populates
 
-    # C implementation (not all):
+    # C implementation (not complete):
     # struct stat {
     #   dev_t st_dev
     #   ino_t st_ino
@@ -85,9 +93,9 @@ load_file:
 
     # in here, we make a xor operation to make RDI (register destination index) null
     # therefore, the kernel itself will determine the address to allocate the file (in this case)
-    # if we would need to allocate at a specific memory address, we could do this by using:
+    ## if was needed to allocate at a specific memory address, we could do this by using:
     # mov rdi, <memory_address>
-    xor %rdi, %rdi
+    xorq %rdi, %rdi
 
     # allocates memory to mmap according to file length
     movq %r13, %rsi # stores the file size into %rsi register
@@ -107,13 +115,13 @@ load_file:
     # MAP_ANONYMOUS = 0x20: not a file, just memory (malloc)
 
     movq %r12, %r8 # define file descriptor that will be passed in mmap
-    xor %r9, %r9 # offset = 0
+    xorq %r9, %r9 # offset = 0
     syscall
 
     testq %rax, %rax
     js error
 
-    movq %rax, %r14 # %r14 = mapped code address
+    movq %rax, tape_base_code(%rip) # mapped code address
 
     movq $3, %rax # sys_close
     movq %r12, %rdi # file descriptor that will be closed
@@ -122,32 +130,32 @@ load_file:
 
 create_cell_mmap:
     movq $9, %rax # sys_mmap
-    xor %rdi, %rdi # kernel chooses address
-    movq $cell_mmap_size, %rsi # mmap size
+    xorq %rdi, %rdi # kernel chooses address
+    movq cell_mmap_size(%rip), %rsi # mmap size
     movq $1, %rdx # read protection
-    movq $0x20, %r10 # MAP_ANONYMOUS: not associate to a file
+    movq $0x20, %r10 # MAP_ANONYMOUS: not associated to a file
     movq $-1, %r2 # no file descriptor
-    xor %r9, %r9 # offset = 0
+    xorq %r9, %r9 # offset = 0
     syscall
 
     testq %rax, %rax
     js error
 
-    movq %rax, %r2 # %r2 = mapped cells address
+    movq %rax, cell_mmap_base(%rip) # mapped cells address
     ret
 
 interpret_loop:
     movq tape_index_code(%rip), %r15 # loads the current code index into %r15 register
-    leaq %r14(%rip), %rdx # gets the base address value of the code storage mmap
-    movzbl (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
+    leaq tape_base_code(%rip), %rdx # gets the base address value of the code storage mmap
+    movq (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %ra
 
     leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
     movq (%rbp, %rax, 8), %rbp # gets the symbol handle label stored in jmp_table
     incq %r15 # increases %r15
 
-    leaq %r2(%rip), %rdx # loads the base address of the cells mmap
+    leaq cell_mmap_base(%rip), %rdx # loads the base address of the cells mmap
     call calculate_cell_index # call a label to calculate the current cell
-    movq (%rax, %rdx, 1), %rax # sums (offset + index = current cell)
+    addq %rdx, %rax # sums (offset + index = current cell)
 
     call *%rbp # call label (indirect register)
 
@@ -175,25 +183,114 @@ cmd_dot:
     syscall
     ret
 
+cmd_right:
+    movq current_cell(%rip), %rax # gets the current cell
+    incq %rax # increases it
+
+    cmpq $MAX_CELL_MMAP_SIZE, %rax # compares it to 2MB
+    jz expand_error # if equal, jump to a label to handle the error
+
+    cmpq cell_mmap_size(%rip), %rax # compares the current cell with the size of the mmap
+    jz expand_right # if they're equal, jump to a label to expand the mmap to right
+
+    movq %rax, current_cell(%rip) # update current_cell
+    ret
+
+cmd_left:
+    movq current_cell(%rip), %rax # current cell index
+    cmpq $0, %rax # compares the current cell index with 0
+
+    # in the case it is equal, it means the start limit was reached
+    # therefore, it is needed to expand to the left
+    je expand_left
+
+    movq current_cell(%rip), %rax # updated current cell index
+    decq %rax # decreases the current cell
+    movq %rax, current_cell(%rip) # update the current cell index
+    ret
+
 calculate_cell_index:
-    movq $2, %rax
-    movq $cell_mmap_size, %rbx # loads the stored cell mmap size
-    divq %rbx # %rbx / %rax (middle of the mmap)
+    xorq %rdx, %rdx
+    movq cell_mmap_size(%rip), %rax # loads the stored cell mmap size
+    movq $2, %rbx
+    divq %rbx # RDX:RAX / RBX (middle of the mmap)
 
     movq current_cell(%rip), %rcx # loads the current cell index
-    movq (%rax, %rcx, 1), %rax # sums it to the %rax
+    addq %rcx, %rax # sums it to the %rax
     ret
+
+expand_right:
+    xorq %rdx, %rdx # first 64 bits
+    movq cell_mmap_size(%rip), %rax # old mmap size (last 64 bits)
+    movq $2, %rsi
+    divq %rsi # get half of the mmap
+
+    addq cell_mmap_size(%rip), %rax # new mmap size (current size + half size)
+
+    movq %rax, %rsi # new mmap size (copy)
+    cmpq $MAX_CELL_MMAP_SIZE, %rsi # verifies if the new size reached 2MB
+    jg expand_error # if so, jump to the handle label
+
+    movq $25, %rax # sys_mremap
+    leaq cell_mmap_base(%rip), %rdi # old mmap address
+    movq %rsi, %rdi # old mmap size
+    # %rsi = new size: addq %rax (old size), 'current' %rsi (value to be increased)
+    movq $1, %r10 # MREMAP_MAYMOVE: relocate the mapping to a new virtual address, if necessary
+    syscall
+
+    testq %rax, %rax
+    js error
+
+    movq %rax, cell_mmap_base(%rip)
+    movq %rbx, cell_mmap_size(%rip)
+    ret
+
+expand_left:
+    xorq %rdx, %rdx
+    movq cell_mmap_size(%rip), %rax
+    movq $2, %rdi
+    divq %rdi # RDX:RAX / RDI (middle of the mmap)
+
+    addq cell_mmap_size(%rip), %rax # size of the new mmap
+
+    movq %rax, %rsi # copy
+    cmpq $MAX_CELL_MMAP_SIZE, %rsi # verify if the limit was reached
+    jg expand_error # if so, handle the error
+    
+    movq $9, %rax # sys_mmap
+    xorq %rdi, %rdi
+    # %rsi = copy of the new mmap size
+    movq $2, %rdx # PROT_WRITE
+    movq $0x20, %r10 # MAP_ANONYMOUS
+    movq $-1, %r2 # no file descriptor
+    xorq %r9, %r9 # offset = 0
+    syscall
+
+    testq %rax, %rax
+    js error
+
+    call items_mmap_copy_loop # call label to copy values into the new mmap, in correct offset
+
+    # updates
+    movq %rsi, cell_mmap_size(%rip)
+    movq %rax, cell_mmap_base(%rip)
+    addq %rsi, current_cell(%rip)
+    ret
+
+items_mmap_copy_loop:
 
 # end program labels
 clean_mmaps:
+    # code mmap
     movq $11, %rax # sys_munmap
-    movq %r14, %rdi # mmap address
+    leaq tape_base_code(%rip), %rdi # mmap address
     movq %r13, %rsi # mmap size
     syscall
     
+    # cells mmap
     movq $11, %rax
-    movq %r2, %rdi
-    movq $cell_mmap_size, %rsi
+    leaq cell_mmap_base(%rip), %rdi
+    movq cell_mmap_size(%rip), %rsi
     syscall
     ret
 
@@ -201,6 +298,19 @@ error:
     call clean_mmaps
     movq $60, %rax # sys_exit
     movq $1, %rdi # exit code (fail)
+    syscall
+
+expand_error:
+    call clean_mmaps
+
+    movq $1, %rax # sys_write
+    movq $1, %rdi # fd: stdout
+    leaq expand_error_message(%rip), %rsi
+    movq $40, %rdx # 40 bytes
+    syscall
+
+    movq $60, %rax
+    movq $1, %rdi
     syscall
 
 end_program:
