@@ -47,35 +47,46 @@ _start:
     # calculate the effective memory of jmp_table and pass it to %rax
     # the use of %rip register in here is complex and I will explain in the readme.md file of this project
     leaq jmp_table(%rip), %rax
-    movq $cmd_plus, 0x2B*8(%rax) # 0x2B (+) * 8 = 0x158 + jmp_table address -> offset representing the character within the table
-    movq $cmd_minus, 0x2D*8(%rax) # 0x2D (-)
-    movq $cmd_right, 0x3E*8(%rax) # 0x3E (>)
-    movq $cmd_left, 0x3C*8(%rax) # 0x3C (<)
-    movq $cmd_comma, 0x2C*8(%rax) # 0x2C (,)
-    movq $cmd_dot, 0x2E*8(%rax) # 0x2E (.)
-    movq $cmd_osqbr, 0x5B*8(%rax) # 0x5B ([)
-    movq $cmd_csqbr, 0x5D*8(%rax) # 0x5D (])
+
+    leaq cmd_plus(%rip), %rbx
+    movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 = 0x158 + jmp_table address -> offset representing the character within the table
+
+    leaq cmd_minus(%rip), %rbx
+    movq %rbx, 0x2D*8(%rax) # 0x2D (-)
+
+    leaq cmd_right(%rip), %rbx
+    movq %rbx, 0x3E*8(%rax) # 0x3E (>)
+
+    leaq cmd_left(%rip), %rbx
+    movq %rbx, 0x3C*8(%rax) # 0x3C (<)
+
+    leaq cmd_comma(%rip), %rbx
+    movq %rbx, 0x2C*8(%rax) # 0x2C (,)
+
+    leaq cmd_dot(%rip), %rbx
+    movq %rbx, 0x2E*8(%rax) # 0x2E (.)
+
+    leaq cmd_osqbr(%rip), %rbx
+    movq %rbx, 0x5B*8(%rax) # 0x5B ([)
+
+    leaq cmd_csqbr(%rip), %rbx
+    movq %rbx, 0x5D*8(%rax) # 0x5D (])
 
     # we must to do this 'cause memory is stored continuously
     # therefore, to access a value stored within the table, we need to get its value from the address of the table itself
 
-    call load_file # call label to open the file (filename)
-    call create_cell_mmap # call label to create a mmap to store all cells of the program
-    call interpret_loop # call label to interpret the code stored
-    call end_program # call label to end the program execution
-
 load_file:
     movq $2, %rax # sys_open
     leaq filename(%rip), %rdi # loads the memory address of `filename` into rdi
-    xorq %rsi, %rsi # make rsi null to represents zero flag (read only)
+    movq $O_RDONLY, %rsi # read only
     xorq %rdx, %rdx
     syscall # used to call kernel to execute the given syscall
 
     testq %rax, %rax # AND operation to determine if the file was correct opened
-
+    js error
     # JS (jump if sign) jumps to a specific label if the result of an operation (in this case, test) is negative
     # in here, it will jump to the `error` label
-    js error
+
     movq %rax, %r12 # stores file descriptor into `r12` register
 
     movq $5, %rax # sys_fstat
@@ -137,14 +148,13 @@ load_file:
     movq $3, %rax # sys_close
     movq %r12, %rdi # file descriptor that will be closed
     syscall
-    ret
 
 create_cell_mmap:
     movq $9, %rax # sys_mmap
     xorq %rdi, %rdi # kernel chooses address
     movq cell_mmap_size(%rip), %rsi # mmap size
-    movq $1, %rdx # read protection
-    movq $0x20, %r10 # MAP_ANONYMOUS: not associated to a file
+    movq $3, %rdx # PROT_READ | PROT_WRITE
+    movq $0x22, %r10 # MAP_ANONYMOUS
     movq $-1, %r8 # no file descriptor
     xorq %r9, %r9 # offset = 0
     syscall
@@ -153,46 +163,48 @@ create_cell_mmap:
     js error
 
     movq %rax, cell_mmap_base(%rip) # mapped cells address
-    ret
 
 interpret_loop:
     movq tape_index_code(%rip), %r15 # loads the current code index into %r15 register
     leaq tape_base_code(%rip), %rdx # gets the base address value of the code storage mmap
-    movq (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %ra
+    movq (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
 
     leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
     movq (%rbp, %rax, 8), %rbp # gets the symbol handle label stored in jmp_table
     incq %r15 # increases %r15
 
-    leaq cell_mmap_base(%rip), %rdx # loads the base address of the cells mmap
+    movq cell_mmap_base(%rip), %rdx # loads the base address of the cells mmap
     call calculate_cell_index # call a label to calculate the current cell
     addq %rdx, %rax # sums (offset + index = current cell)
+    movq %rax, %rdi
 
-    call *%rbp # call label (indirect register)
+    jmp *%rbp # call label (indirect register)
 
+continue_loop:
     movq %r15, tape_index_code(%rip)
 
     incq %r15
     cmpq %r13, %r15 # verifies if the the file limit was reached
     jl interpret_loop # if lower, call interpret_loop to make a loop
-    ret
+    jz end_program
 
 # operations labels
 cmd_plus:
-    incq (%rax) # increases the value stored in %rax address
-    ret
+    incq (%rdi) # increases the value stored in %rax address
+    jmp continue_loop
 
 cmd_minus:
-    decq (%rax) # decreases the value stored in %rax address
-    ret
+    decq (%rdi) # decreases the value stored in %rax address
+    jmp continue_loop
 
 cmd_dot:
-    movq %rax, %rsi # pointer to character
+    movq %rdi, %rsi # pointer to character
     movq $1, %rax # sys_write
     movq $1, %rdi # file descriptor: stdout
     movq $1, %rdx # it will always have 1 byte
     syscall
-    ret
+
+    jmp continue_loop
 
 cmd_right:
     movq current_cell(%rip), %rax # gets the current cell
@@ -200,12 +212,13 @@ cmd_right:
     cmpq $MAX_CELL_MMAP_SIZE, %rax # compares it to 2MB
     jz expand_error # if equal, jump to a label to handle the error
 
-    cmpq cell_mmap_size(%rip), %rax # compares the current cell with the size of the mmap
-    jz expand_right # if they're equal, jump to a label to expand the mmap to right
-
     incq %rax # increases the current cell
     movq %rax, current_cell(%rip) # update current_cell global variable
-    ret
+
+    cmpq cell_mmap_size(%rip), %rax # compares the current cell with the size of the mmap
+    jge expand_right # if they're equal, jump to a label to expand the mmap to right
+  
+    jmp continue_loop
 
 cmd_left:
     movq current_cell(%rip), %rax # current cell index
@@ -218,7 +231,8 @@ cmd_left:
     movq current_cell(%rip), %rax # updated current cell index
     decq %rax # decreases the current cell
     movq %rax, current_cell(%rip) # update the current cell index
-    ret
+    
+    jmp continue_loop
 
 cmd_comma:
     xorq %rax, %rax # sys_read
@@ -231,17 +245,8 @@ cmd_comma:
     movq current_cell(%rip), %rdi # loads the current cell
     movb input_buffer(%rip), %dl
     movb %dl, (%rax, %rdi, 1) # saves the read buffer into the current cell value
-    ret
-
-calculate_cell_index:
-    xorq %rdx, %rdx
-    movq cell_mmap_size(%rip), %rax # loads the stored cell mmap size
-    movq $2, %rbx
-    divq %rbx # RDX:RAX / RBX (middle of the mmap)
-
-    movq current_cell(%rip), %rcx # loads the current cell index
-    addq %rcx, %rax # sums it to the %rax
-    ret
+    
+    jmp continue_loop
 
 expand_right:
     xorq %rdx, %rdx # first 64 bits
@@ -251,14 +256,14 @@ expand_right:
 
     addq cell_mmap_size(%rip), %rax # new mmap size (current size + half size)
 
-    movq %rax, %rsi # new mmap size (copy)
-    cmpq $MAX_CELL_MMAP_SIZE, %rsi # verifies if the new size reached 2MB
+    movq %rax, %rcx # new mmap size (copy)
+    cmpq $MAX_CELL_MMAP_SIZE, %rcx # verifies if the new size reached 2MB
     jg expand_error # if so, jump to the handle label
 
     movq $25, %rax # sys_mremap
-    leaq cell_mmap_base(%rip), %rdi # old mmap address
-    movq %rsi, %rdi # old mmap size
-    # %rsi = new size: addq %rax (old size), 'current' %rsi (value to be increased)
+    movq cell_mmap_base(%rip), %rdi # old mmap address
+    movq cell_mmap_size(%rip), %rsi # old mmap size
+    movq %rcx, %rdx # new mmap size
     movq $1, %r10 # MREMAP_MAYMOVE: relocate the mapping to a new virtual address, if necessary
     syscall
 
@@ -267,7 +272,8 @@ expand_right:
 
     movq %rax, cell_mmap_base(%rip)
     movq %rbx, cell_mmap_size(%rip)
-    ret
+    
+    jmp continue_loop
 
 expand_left:
     xorq %rdx, %rdx
@@ -277,14 +283,14 @@ expand_left:
 
     movq %rax, shift_left_expand(%rip)
     addq cell_mmap_size(%rip), %rax # size of the new mmap
-    movq %rax, %rsi # copy
+    movq %rax, %r14 # copy
 
     cmpq $MAX_CELL_MMAP_SIZE, %rsi # verify if the limit was reached
     jg expand_error # if so, calls the error handler label
     
     movq $9, %rax # sys_mmap
     xorq %rdi, %rdi
-    # %rsi = copy of the new mmap size
+    movq %r14, %rsi # mmap size
     movq $3, %rdx # PROT_READ | PROT_WRITE
     movq $0x22, %r10 # MAP_ANONYMOUS
     movq $-1, %r8 # no file descriptor
@@ -295,9 +301,13 @@ expand_left:
     js error
 
     movq %rax, %r15 # new mmap base
-    movq %rsi, %r14 # new mmap size
 
-    call items_mmap_copy_loop # call label to copy values into the new mmap, in correct offset
+    movq %r15, %rdi # base of the new mmap (not updated yet), coming from "expand_left" label
+    movq cell_mmap_base(%rip), %rsi # base of the old mmap
+    addq shift_left_expand(%rip), %rdi # base + offset
+    movq cell_mmap_size(%rip), %rcx # current cell mmap size
+
+    call copy_memory # call label to copy values into the new mmap, in correct offset
  
     movq $11, %rax # sys_munmap
     movq cell_mmap_base(%rip), %rdi
@@ -309,23 +319,31 @@ expand_left:
     movq %r15, cell_mmap_base(%rip)
     movq shift_left_expand(%rip), %rax
     addq %rax, current_cell(%rip)
+    
+    jmp continue_loop
+
+copy_memory:
+    testq %rcx, %rcx
+    jz .copy_done
+
+.copy_loop:
+    movb (%rsi), %al # old mmap base
+    movb %al, (%rdi) # base of the new mmap + shift
+    incq %rsi
+    incq %rdi
+    decq %rcx
+    jnz .copy_loop
+
+.copy_done:
     ret
 
-items_mmap_copy_loop:
-    movq %rax, %r8 # base of the new mmap (not updated yet), coming from "expand_left" label
-    movq cell_mmap_base(%rip), %rax # base of the old mmap
-    movq shift_left_expand(%rip), %rdi
-    
-    leaq (%rdi, %r13, 1), %r9 # current index (cell) + offset
+calculate_cell_index:
+    xorq %rdx, %rdx
+    movq cell_mmap_size(%rip), %rax # loads the stored cell mmap size
+    movq $2, %rbx
+    divq %rbx # RDX:RAX / RBX (middle of the mmap)
 
-    movq current_cell(%rip), %r13
-    movq (%rax, %r13, 1), %rax # current index in the old mmap
-    movq %rax, (%r8, %r9, 1) # current index in the new mmap
-    
-    addq $8, %r13
-    cmpq %r13, cell_mmap_size(%rip)
-    jl items_mmap_copy_loop
-
+    addq current_cell(%rip), %rax # sums it to the %rax
     ret
 
 # end program labels
@@ -370,7 +388,6 @@ not_valid_symbol_error:
     syscall
 
     jmp error
-    ret
 
 end_program:
     call clean_mmaps
