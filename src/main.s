@@ -1,13 +1,18 @@
 .section .data
     expand_error_message: .ascii "2MB cells amount reached"
     not_valid_symbol_error_message: .ascii "Not valid symbol. Exiting with 1 error."
+    not_closed_bracket_error_message: .ascii "Not closed bracket. Exiting with 1 error."
 
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
     tape_index_code: .quad 0 # current code mmap index
     current_cell: .quad 0 # current cell index
 
+    last_closed_square_bracket: .quad 0
+    current_loop_depth: .quad 0
+
     # constants
     .equ MAX_CELL_MMAP_SIZE, 2097152
+    newline: .byte 0x0A
 
 # section used to declare a memory segment to a uninitialized static data
 .section .bss
@@ -17,6 +22,7 @@
     stat_buf: .space 144 # reserve 144 bytes
     input_buffer: .byte 0
     filename: .quad 0 # it will store the name of the file it will be open
+    code_mmap_size: .quad 0
     
     .align 8
     tape_base_code: .quad 0 # base address of the code mmap
@@ -30,8 +36,8 @@
 _start:
     movq (%rsp), %rax # gets the stack pointer
     cmpq $2, %rax # compares with two
-    jl error # if lower, return an error (where's filename?)
-    jg error # if greater, return an error (too much arguments)
+    jl .error # if lower, return an error (where's filename?)
+    jg .error # if greater, return an error (too much arguments)
 
     movq 16(%rsp), %rax # gets the first argument - filename (argv[1])
     movq %rax, filename(%rip)
@@ -70,11 +76,11 @@ _start:
     leaq cmd_dot(%rip), %rbx
     movq %rbx, 0x2E*8(%rax) # 0x2E (.)
 
-    #leaq cmd_osqbr(%rip), %rbx
-    #movq %rbx, 0x5B*8(%rax) # 0x5B ([)
+    leaq cmd_osqbr(%rip), %rbx
+    movq %rbx, 0x5B*8(%rax) # 0x5B ([)
 
-    #leaq cmd_csqbr(%rip), %rbx
-    #movq %rbx, 0x5D*8(%rax) # 0x5D (])
+    leaq cmd_csqbr(%rip), %rbx
+    movq %rbx, 0x5D*8(%rax) # 0x5D (])
 
     # we must to do this 'cause memory is stored continuously
     # therefore, to access a value stored within the table, we need to get its value from the address of the table itself
@@ -87,7 +93,7 @@ load_file:
     syscall # used to call kernel to execute the given syscall
 
     testq %rax, %rax # AND operation to determine if the file was correct opened
-    js error
+    js .error
     # JS (jump if sign) jumps to a specific label if the result of an operation (in this case, test) is negative
     # in here, it will jump to the `error` label
 
@@ -99,7 +105,7 @@ load_file:
     syscall
 
     testq %rax, %rax
-    js error
+    js .error
 
     movq stat_buf+48(%rip), %r13 # r13 will store the file size
     # size is stored at offset 48 of buffer because of the struct he populates
@@ -113,7 +119,9 @@ load_file:
     # }
 
     testq %r13, %r13
-    jz error
+    jz .error
+
+    movq %r13, code_mmap_size(%rip)
     
     # mmap maps something into the virtual memory of the program
     # instead of reading a file and copy data into a buffer, mmap will only pointer to a map
@@ -126,7 +134,7 @@ load_file:
     xorq %rdi, %rdi
 
     # allocates memory to mmap according to file length
-    movq %r13, %rsi # stores the file size into %rsi register
+    movq code_mmap_size(%rip), %rsi # stores the file size into %rsi register
     movq $3, %rdx
 
     # Protection:
@@ -147,7 +155,7 @@ load_file:
     syscall
 
     testq %rax, %rax
-    js error
+    js .error
 
     movq %rax, tape_base_code(%rip) # mapped code address
 
@@ -166,7 +174,7 @@ create_cell_mmap:
     syscall
 
     testq %rax, %rax
-    js error
+    js .error
 
     movq %rax, cell_mmap_base(%rip) # mapped cells address
 
@@ -181,17 +189,17 @@ interpret_loop:
     leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
     movq (%rbp, %rax, 8), %rbp # gets the symbol handler label stored in jmp_table
 
-    incq %r15 # increases %r15
-    movq %r15, tape_index_code(%rip)
-
     call calculate_cell_index # call a label to calculate the current cell
     movq %rax, %rdi
 
     jmp *%rbp # call label (indirect register)
 
 continue_loop:
+    incq %r15 # increases %r15
+    movq %r15, tape_index_code(%rip)
+
     incq %r15
-    cmpq %r13, %r15 # verifies if the the file limit was reached
+    cmpq code_mmap_size(%rip), %r15 # verifies if the the file limit was reached
     jl interpret_loop # if lower, call interpret_loop to make a loop
     jz end_program
 
@@ -220,7 +228,7 @@ cmd_right:
     movq current_cell(%rip), %rax # gets the current cell
 
     cmpq $MAX_CELL_MMAP_SIZE, %rax # compares it to 2MB
-    jz expand_error # if equal, jump to a label to handle the error
+    jz .expand_error # if equal, jump to a label to handle the error
 
     incq %rax # increases the current cell
     movq %rax, current_cell(%rip) # update current_cell global variable
@@ -258,6 +266,73 @@ cmd_comma:
     
     jmp continue_loop
 
+cmd_osqbr:
+    call calculate_cell_index # call a label to calculate the current cell
+
+    movzx (%rax), %rcx # current cell value
+
+    cmpq $0, %rcx
+    jz .jmp_to_final_of_loop
+
+    pushq tape_index_code(%rip) # push current symbol memory address ([) into stack memory
+
+    jmp continue_loop
+
+.jmp_to_final_of_loop:
+    movq last_closed_square_bracket(%rip), %rax
+    cmpq $0, %rax
+    jnz .jmp_with_ease
+
+    jmp .jmp_with_loop
+
+.jmp_with_ease:
+    movq last_closed_square_bracket(%rip), %rax
+    incq %rax
+
+    cmpq code_mmap_size(%rip), %rax
+    jz end_program
+
+    movq %rax, tape_index_code(%rip)
+    jmp interpret_loop
+
+.jmp_with_loop:
+    movq tape_index_code(%rip), %rdi
+    movq tape_base_code(%rip), %rsi # gets the base of the code mmap
+    addq %rdi, %rsi # sums current index code (%rdi) with mmap base to get
+    # the memory address of the current symbol
+
+    cmpq $0x5B, (%rsi) # [
+    incb current_loop_depth(%rip)
+    
+    cmpq $0x5D, (%rsi) # compares 0x5D (]) with the value of the current symbol
+    jz .verify_depth # if equal, verify the depth of loop
+
+    incq %rdi # if not, increases %rdi (index)
+
+    cmpq code_mmap_size(%rip), %rdi
+    jz .not_closed_bracket_error
+
+    movq %rdi, tape_index_code(%rip) # updates variable
+    jmp .jmp_with_loop
+
+.verify_depth:
+    cmpq $0, current_loop_depth(%rip)
+    jz interpret_loop
+    incb current_loop_depth(%rip)
+
+    decb current_loop_depth(%rip)
+    ret
+
+cmd_csqbr:
+    movq (%rsp), %rax # gets the index of the current open square bracket (in stack memory)
+    movq tape_index_code(%rip), %rdi # moves the current symbol index to %rdi
+    movq %rdi, last_closed_square_bracket(%rip) # stores it into a variable (it will be used to jump)
+
+    movq %rax, tape_index_code(%rip) # moves the opening index of the loop into code index
+
+    popq %rbx # pops the top value from stack memory
+    jmp interpret_loop
+
 expand_right:
     xorq %rdx, %rdx # first 64 bits
     movq cell_mmap_size(%rip), %rax # old mmap size (last 64 bits)
@@ -268,7 +343,7 @@ expand_right:
 
     movq %rax, %rcx # new mmap size (copy)
     cmpq $MAX_CELL_MMAP_SIZE, %rcx # verifies if the new size reached 2MB
-    jg expand_error # if so, jump to the handle label
+    jg .expand_error # if so, jump to the handle label
 
     movq $25, %rax # sys_mremap
     movq cell_mmap_base(%rip), %rdi # old mmap address
@@ -278,7 +353,7 @@ expand_right:
     syscall
 
     testq %rax, %rax
-    js error
+    js .error
 
     movq %rax, cell_mmap_base(%rip)
     movq %rbx, cell_mmap_size(%rip)
@@ -296,7 +371,7 @@ expand_left:
     movq %rax, %r14 # copy
 
     cmpq $MAX_CELL_MMAP_SIZE, %rsi # verify if the limit was reached
-    jg expand_error # if so, calls the error handler label
+    jg .expand_error # if so, calls the error handler label
     
     movq $9, %rax # sys_mmap
     xorq %rdi, %rdi
@@ -308,7 +383,7 @@ expand_left:
     syscall
 
     testq %rax, %rax
-    js error
+    js .error
 
     movq %rax, %r15 # new mmap base
 
@@ -362,7 +437,7 @@ clean_mmaps:
     # code mmap
     movq $11, %rax # sys_munmap
     leaq tape_base_code(%rip), %rdi # mmap address
-    movq %r13, %rsi # mmap size
+    movq code_mmap_size(%rip), %rsi # mmap size
     syscall
     
     # cells mmap
@@ -372,39 +447,51 @@ clean_mmaps:
     syscall
     ret
 
-error:
+invalid_char:
+    jmp continue_loop
+
+.error:
     call clean_mmaps
     movq $60, %rax # sys_exit
     movq $1, %rdi # exit code (fail)
     syscall
 
-expand_error:
-    call clean_mmaps
-
+.expand_error:
     movq $1, %rax # sys_write
     movq $1, %rdi # fd: stdout
     leaq expand_error_message(%rip), %rsi
     movq $40, %rdx # 40 bytes
     syscall
 
-    movq $60, %rax
-    movq $1, %rdi
-    syscall
+    jmp .error
 
-invalid_char:
-    jmp continue_loop
-
-not_valid_symbol_error:
+.not_valid_symbol_error:
     movq $1, %rax #sys_write
-    movq $2, %rdi
+    movq $1, %rdi
     leaq not_valid_symbol_error_message(%rip), %rsi
     movq $50, %rdx
     syscall
 
-    jmp error
+    jmp .error
+
+.not_closed_bracket_error:
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    leaq not_closed_bracket_error_message(%rip), %rsi
+    movq $50, %rdx
+    syscall
+
+    jmp .error
 
 end_program:
     call clean_mmaps
+
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    lea newline(%rip), %rsi
+    movq $1, %rdx
+    syscall
+
     movq $60, %rax # sys_exit
     movq $0,  %rdi # exit code (successful)
     syscall
