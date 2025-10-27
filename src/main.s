@@ -1,7 +1,11 @@
 .section .data
-    expand_error_message: .ascii "2MB cells amount reached"
-    not_valid_symbol_error_message: .ascii "Not valid symbol. Exiting with 1 error."
-    not_closed_bracket_error_message: .ascii "Not closed bracket. Exiting with 1 error."
+    # error messages
+    expand_error_message: .ascii "Error: Maximum cells amount reached\n"
+    not_closed_bracket_error_message: .ascii "Error: Not closed bracket. Exiting with 1 error\n"
+    missing_value_error_message: .ascii "Error: Flag with no value\n"
+    multiple_files_error_message: .ascii "Error: Multiple files given\n"
+    no_input_error_message: .ascii "Error: No given code source\n"
+    multiple_input_error_message: .ascii "Error: You must use a file or inline code, not both\n"
 
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
     tape_index_code: .quad 0 # current code mmap index
@@ -9,9 +13,9 @@
 
     last_closed_square_bracket: .quad 0
     current_loop_depth: .quad 0
+    max_cell_mmap_size: .quad 2097152
 
     # constants
-    .equ MAX_CELL_MMAP_SIZE, 2097152
     newline: .byte 0x0A
 
 # section used to declare a memory segment to a uninitialized static data
@@ -21,7 +25,6 @@
     jmp_table: .space 2048
     stat_buf: .space 144 # reserve 144 bytes
     input_buffer: .byte 0
-    filename: .quad 0 # it will store the name of the file it will be open
     code_mmap_size: .quad 0
     
     .align 8
@@ -29,24 +32,25 @@
     cell_mmap_base: .quad 0 # it will store the current address base of the cell mmap
     shift_left_expand: .quad 0 # stores the value of the shift to use in the copy loop
 
+    filename: .quad 0 # it will store the name of the file it will be open
+    inline_code: .quad 0
+    has_inline: .quad 0
+    has_file: .quad 0
+
 # instructions section
 .section .text
 .globl _start
 
 _start:
-    movq (%rsp), %rax # gets the stack pointer
-    cmpq $2, %rax # compares with two
-    jl .error # if lower, return an error (where's filename?)
-    jg .error # if greater, return an error (too much arguments)
+    movq (%rsp), %r12 # argc
+    leaq 8(%rsp), %r13 # argv[0] = program name
 
-    movq 16(%rsp), %rax # gets the first argument - filename (argv[1])
-    movq %rax, filename(%rip)
+    decq %r12 # R12 doesn't count the program name as an argument
+    addq $8, %r13 # argv[1]
 
-    # in here, it will define the valid entrances of BF in `jmp_table`
-    # in each of the following value attribution, we will associate it to a label pointer
+    cmpq $2, %r12 # compares with two
+    jl .error # if lower, return an error (few arguments)
 
-    # calculate the effective memory of jmp_table and pass it to %rax
-    # the use of %rip register in here is complex and I will explain in the readme.md file of this project
     leaq jmp_table(%rip), %rdi
     leaq invalid_char(%rip), %rsi
     movq $256, %rcx # loop counter
@@ -55,6 +59,11 @@ _start:
     movq %rsi, (%rdi) # store `invalid_char` into the current quad
     addq $8, %rdi
     loop .fill_loop
+
+    # in here, it will define the valid entrances of BF in `jmp_table`
+    # in each of the following value attribution, we will associate it to a label pointer
+
+    # calculate the effective memory of jmp_table and pass it to %rax
 
     leaq jmp_table(%rip), %rax
 
@@ -84,6 +93,150 @@ _start:
 
     # we must to do this 'cause memory is stored continuously
     # therefore, to access a value stored within the table, we need to get its value from the address of the table itself
+
+parse_args_loop:
+    testq %r12, %r12
+    jz .args_done
+
+    movq (%r13), %rdi # value of the current argument
+
+    cmpb $'-', (%rdi) # compares it with '-'
+    jne .positional_arg
+
+    movb 1(%rdi), %al
+
+    cmpb $'c', %al
+    je c_flag
+
+    cmpb $'f', %al
+    je f_flag
+
+    cmpb $'m', %al
+    je m_flag
+
+    cmpb $'h', %al
+    je h_flag
+    
+    jmp .unknown_flag
+
+.positional_arg:
+    cmpb $0, has_file(%rip)
+    jne .error_multiple_files
+
+    movq %rdi, filename(%rip)
+    movq $1, has_file(%rip)
+    jmp .next_arg
+
+.next_arg:
+    decq %r12
+    addq $8, %r13
+    jmp parse_args_loop
+
+.args_done:
+    movb has_inline(%rip), %al
+    orb has_file(%rip), %al
+    jz .error_no_input
+
+    movb has_inline(%rip), %al
+    andb has_file(%rip), %al
+    jnz .error_multiple_input
+
+    cmpb $1, has_inline(%rip)
+    je .use_inline
+    jmp load_file
+
+c_flag:
+    decq %r12
+    addq $8, %r13 # next argument
+
+    testq %r12, %r12
+    jz .missing_value
+
+    movq (%r13), %rdi # flag value
+    movq %rdi, inline_code(%rip) # stores the code into the variable
+
+    movb $1, has_inline(%rip) # true
+    jmp .next_arg
+
+f_flag:
+    decq %r12
+    addq $8, %r13 # next arg
+
+    testq %r12, %r12
+    jz .missing_value
+
+    movq (%r13), %rax
+    movq %rax, filename(%rip) # stores the filename into 'filename' variable
+    movb $1, has_file(%rip) # makes it true
+    jmp .next_arg
+
+m_flag:
+    decq %r12
+    addq $8, %r13 # next arg
+
+    testq %r12, %r12
+    jz .missing_value
+
+    movq (%r13), %rdi
+    call parse_number # call a label to convert a string to number
+    movq %rax, max_cell_mmap_size(%rip)
+    jmp .next_arg
+
+h_flag:
+    call print_help
+    jmp end_program
+
+.unknown_flag:
+    jmp .error
+
+.use_inline:
+    movq inline_code(%rip), %rdi
+    call strlen # call a label to convert a given string in integer
+    movq %rax, code_mmap_size(%rip) # stores it into a global variable
+
+    movq $9, %rax # sys_mmap
+    xorq %rdi, %rdi # kernel chooses address
+    movq code_mmap_size(%rip), %rsi # mmap size
+    addq $1, %rsi # \0
+    movq $3, %rdx # PROT_READ | PROT_WRITE
+    movq $0x22, %r10 # MAP_ANONYMOUS
+    movq $-1, %r8 # no file descriptor
+    xorq %r9, %r9 # offset = 0
+    syscall
+
+    testq %rax, %rax
+    js .error
+
+    movq %rax, tape_base_code(%rip) # copy the base of the mmap into tape_base_code
+    
+    movq inline_code(%rip), %rsi
+    movq %rax, %rdi
+    movq code_mmap_size(%rip), %rcx
+    call copy_inline_code_to_mmap # call a label to copy code from inline to mmap
+
+    movq tape_base_code(%rip), %rax
+    movq code_mmap_size(%rip), %rcx
+    movb $0, (%rax, %rcx, 1) # add '\0' at the final
+
+    jmp create_cell_mmap
+
+copy_inline_code_to_mmap:
+    testq %rcx, %rcx
+    jz .done
+.loop_inline_code:
+    testq %rcx, %rcx
+    jz .done
+    
+    movb (%rsi), %al
+    movb %al, (%rdi)
+
+    incq %rsi
+    incq %rdi
+
+    decq %rcx
+    jnz .loop_inline_code
+.done:
+    ret
 
 load_file:
     movq $2, %rax # sys_open
@@ -198,7 +351,6 @@ continue_loop:
     incq %r15 # increases %r15
     movq %r15, tape_index_code(%rip)
 
-    incq %r15
     cmpq code_mmap_size(%rip), %r15 # verifies if the the file limit was reached
     jl interpret_loop # if lower, call interpret_loop to make a loop
     jz end_program
@@ -227,7 +379,7 @@ cmd_dot:
 cmd_right:
     movq current_cell(%rip), %rax # gets the current cell
 
-    cmpq $MAX_CELL_MMAP_SIZE, %rax # compares it to 2MB
+    cmpq max_cell_mmap_size(%rip), %rax # compares it to 2MB
     jz .expand_error # if equal, jump to a label to handle the error
 
     incq %rax # increases the current cell
@@ -342,7 +494,7 @@ expand_right:
     addq cell_mmap_size(%rip), %rax # new mmap size (current size + half size)
 
     movq %rax, %rcx # new mmap size (copy)
-    cmpq $MAX_CELL_MMAP_SIZE, %rcx # verifies if the new size reached 2MB
+    cmpq max_cell_mmap_size(%rip), %rcx # verifies if the new size reached 2MB
     jg .expand_error # if so, jump to the handle label
 
     movq $25, %rax # sys_mremap
@@ -370,7 +522,7 @@ expand_left:
     addq cell_mmap_size(%rip), %rax # size of the new mmap
     movq %rax, %r14 # copy
 
-    cmpq $MAX_CELL_MMAP_SIZE, %rsi # verify if the limit was reached
+    cmpq max_cell_mmap_size(%rip), %rsi # verify if the limit was reached
     jg .expand_error # if so, calls the error handler label
     
     movq $9, %rax # sys_mmap
@@ -432,6 +584,58 @@ calculate_cell_index:
     addq cell_mmap_base(%rip), %rax # current cell address
     ret
 
+parse_number:
+    xorq %rax, %rax
+    xorq %rcx, %rcx
+.loop:
+    movzx (%rdi, %rcx, 1), %rbx
+    testb %bl, %bl
+    jz .loop_done 
+
+    # Verifica se é dígito
+    cmpb $'0', %bl
+    jl .error_nan
+    cmpb $'9', %bl
+    jg .error_nan
+    
+    # resultado = resultado * 10
+    movq $10, %rdx
+    mulq %rdx                # RAX = RAX * 10 (RDX tem lixo depois)
+    
+    # + (char - '0')
+    subb $'0', %bl
+    movzx %bl, %rbx
+    addq %rbx, %rax
+    
+    incq %rcx
+    jmp .loop
+.loop_done:
+    ret
+
+.error_nan:
+    jmp .error
+
+strlen:
+    xorq %rax, %rax
+
+.loop_len:
+    cmpb $0, (%rdi, %rax, 1) # verifies if it's '\0'
+    je .done_loop_len
+    incq %rax # length of the given string
+    jmp .loop_len
+
+.done_loop_len:
+    ret
+
+print_help:
+    movq $1, %rax # sys_write
+    movq $1, %rdi # fd: stdout
+    leaq expand_error_message(%rip), %rsi
+    movq $40, %rdx # 40 bytes
+    syscall
+
+    ret
+
 # end program labels
 clean_mmaps:
     # code mmap
@@ -460,16 +664,7 @@ invalid_char:
     movq $1, %rax # sys_write
     movq $1, %rdi # fd: stdout
     leaq expand_error_message(%rip), %rsi
-    movq $40, %rdx # 40 bytes
-    syscall
-
-    jmp .error
-
-.not_valid_symbol_error:
-    movq $1, %rax #sys_write
-    movq $1, %rdi
-    leaq not_valid_symbol_error_message(%rip), %rsi
-    movq $50, %rdx
+    movq $37, %rdx
     syscall
 
     jmp .error
@@ -478,7 +673,43 @@ invalid_char:
     movq $1, %rax #sys_write
     movq $1, %rdi
     leaq not_closed_bracket_error_message(%rip), %rsi
-    movq $50, %rdx
+    movq $49, %rdx
+    syscall
+
+    jmp .error
+
+.missing_value:
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    leaq missing_value_error_message(%rip), %rsi
+    movq $27, %rdx
+    syscall
+
+    jmp .error
+
+.error_multiple_files:
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    leaq multiple_files_error_message(%rip), %rsi
+    movq $29, %rdx
+    syscall
+
+    jmp .error
+
+.error_no_input:
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    leaq no_input_error_message(%rip), %rsi
+    movq $29, %rdx
+    syscall
+
+    jmp .error
+
+.error_multiple_input:
+    movq $1, %rax #sys_write
+    movq $1, %rdi
+    leaq multiple_input_error_message(%rip), %rsi
+    movq $53, %rdx
     syscall
 
     jmp .error
