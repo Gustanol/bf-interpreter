@@ -25,6 +25,7 @@
     stat_buf: .space 144 # reserve 144 bytes
     input_buffer: .byte 0
     code_mmap_size: .quad 0
+    bracket_depth: .quad 0
     
     .align 8
     tape_base_code: .quad 0 # base address of the code mmap
@@ -376,30 +377,36 @@ cmd_dot:
     jmp continue_loop
 
 cmd_right:
-    movq current_cell(%rip), %rax # gets the current cell
+    call calculate_cell_index
 
-    cmpq max_cell_mmap_size(%rip), %rax # compares it to 2MB
-    jz .expand_error # if equal, jump to a label to handle the error
+    movq cell_mmap_size(%rip), %rdi
+    movq cell_mmap_base(%rip), %rsi
+    
+    movq (%rdi, %rsi, 1), %rdx
 
-    incq %rax # increases the current cell
-    movq %rax, current_cell(%rip) # update current_cell global variable
-
-    cmpq cell_mmap_size(%rip), %rax # compares the current cell with the size of the mmap
+    cmpq %rdx, %rax # compares the current cell with the size of the mmap
     jge expand_right # if they're equal, jump to a label to expand the mmap to right
+
+    incq current_cell(%rip) # update current_cell global variable
   
     jmp continue_loop
 
 cmd_left:
-    movq current_cell(%rip), %rax # current cell index
-    cmpq $0, %rax # compares the current cell index with 0
+    call calculate_cell_index
+
+    movq cell_mmap_size(%rip), %rdi
+    movq cell_mmap_base(%rip), %rsi
+    
+    movq (%rdi, %rsi, 1), %rdx
+
+    cmpq %rdx, %rax # compares the current cell index with cell_mmap_base
 
     # in the case it is equal, it means the start limit was reached
+    # base + base/2 + index -> index = base/2
     # therefore, it is needed to expand to the left
-    jz expand_left
+    jge expand_left
 
-    movq current_cell(%rip), %rax # updated current cell index
-    decq %rax # decreases the current cell
-    movq %rax, current_cell(%rip) # update the current cell index
+    decq current_cell(%rip) # update the current cell index
     
     jmp continue_loop
 
@@ -423,6 +430,8 @@ cmd_osqbr:
 
     testb %cl, %cl
     jz .jmp_to_final_of_loop
+
+    incq bracket_depth(%rip)
 
     movq tape_index_code(%rip), %rax
     pushq %rax # push current symbol memory address ([) into stack memory
@@ -490,6 +499,11 @@ cmd_osqbr:
     jmp continue_loop
 
 cmd_csqbr:
+    cmpq $0, bracket_depth(%rip)
+    jle .not_closed_bracket_error # depth <= 0 -> [ without ]
+
+    decq bracket_depth(%rip)
+
     movq (%rsp), %rax # gets the index of the current open square bracket (in stack memory)
     movq tape_index_code(%rip), %rdi # moves the current symbol index to %rdi
     movq %rdi, last_closed_square_bracket(%rip) # stores it into a variable (it will be used to jump)
@@ -508,6 +522,7 @@ expand_right:
     addq cell_mmap_size(%rip), %rax # new mmap size (current size + half size)
 
     movq %rax, %rcx # new mmap size (copy)
+
     cmpq max_cell_mmap_size(%rip), %rcx # verifies if the new size reached 2MB
     jg .expand_error # if so, jump to the handle label
 
@@ -536,7 +551,7 @@ expand_left:
     addq cell_mmap_size(%rip), %rax # size of the new mmap
     movq %rax, %r14 # copy
 
-    cmpq max_cell_mmap_size(%rip), %rsi # verify if the limit was reached
+    cmpq max_cell_mmap_size(%rip), %r14 # verify if the limit was reached
     jg .expand_error # if so, calls the error handler label
     
     movq $9, %rax # sys_mmap
@@ -687,7 +702,7 @@ invalid_char:
     movq $1, %rax #sys_write
     movq $1, %rdi
     leaq not_closed_bracket_error_message(%rip), %rsi
-    movq $49, %rdx
+    movq $48, %rdx
     syscall
 
     jmp .error
@@ -729,6 +744,9 @@ invalid_char:
     jmp .error
 
 end_program:
+    cmpq $0, bracket_depth(%rip)
+    jnz .not_closed_bracket_error
+
     call clean_mmaps
 
     movq $1, %rax #sys_write
