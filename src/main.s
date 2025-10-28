@@ -12,7 +12,6 @@
     current_cell: .quad 0 # current cell index
 
     last_closed_square_bracket: .quad 0
-    current_loop_depth: .quad 0
     max_cell_mmap_size: .quad 2097152
 
     # constants
@@ -348,8 +347,8 @@ interpret_loop:
     jmp *%rbp # call label (indirect register)
 
 continue_loop:
-    incq %r15 # increases %r15
-    movq %r15, tape_index_code(%rip)
+    incq tape_index_code(%rip) # increases current code index
+    movq tape_index_code(%rip), %r15
 
     cmpq code_mmap_size(%rip), %r15 # verifies if the the file limit was reached
     jl interpret_loop # if lower, call interpret_loop to make a loop
@@ -420,26 +419,27 @@ cmd_comma:
 
 cmd_osqbr:
     call calculate_cell_index # call a label to calculate the current cell
-
     movzx (%rax), %rcx # current cell value
 
-    cmpq $0, %rcx
+    testb %cl, %cl
     jz .jmp_to_final_of_loop
 
-    pushq tape_index_code(%rip) # push current symbol memory address ([) into stack memory
+    movq tape_index_code(%rip), %rax
+    pushq %rax # push current symbol memory address ([) into stack memory
 
     jmp continue_loop
 
 .jmp_to_final_of_loop:
     movq last_closed_square_bracket(%rip), %rax
-    cmpq $0, %rax
-    jnz .jmp_with_ease
+    movq $0, last_closed_square_bracket(%rip)
 
-    jmp .jmp_with_loop
+    testq %rax, %rax
+    jnz .use_cached
 
-.jmp_with_ease:
-    movq last_closed_square_bracket(%rip), %rax
-    incq %rax
+    jmp .find_closing_bracket
+
+.use_cached:
+    incq %rax # last closed square bracket index + 1 (next symbol)
 
     cmpq code_mmap_size(%rip), %rax
     jz end_program
@@ -447,33 +447,47 @@ cmd_osqbr:
     movq %rax, tape_index_code(%rip)
     jmp interpret_loop
 
-.jmp_with_loop:
+.find_closing_bracket:
+    xorb %bl, %bl # teporary variable to store the depth of the loop
     movq tape_index_code(%rip), %rdi
-    movq tape_base_code(%rip), %rsi # gets the base of the code mmap
-    addq %rdi, %rsi # sums current index code (%rdi) with mmap base to get
-    # the memory address of the current symbol
+    incq %rdi # increases RDI to start loop in the next symbol, not '['
 
-    cmpq $0x5B, (%rsi) # [
-    incb current_loop_depth(%rip)
+.search_loop:
+    cmpq code_mmap_size(%rip), %rdi
+    jge .not_closed_bracket_error
+
+    movq tape_base_code(%rip), %rsi
+    movb (%rsi, %rdi, 1), %al # current symbol
+
+    testb %al, %al # verifies if the current symbol is EOF (\0)
+    jz .not_closed_bracket_error
     
-    cmpq $0x5D, (%rsi) # compares 0x5D (]) with the value of the current symbol
+    cmpb $0x5B, %al # [
+    je .inc_depth
+    
+    cmpb $0x5D, %al # compares 0x5D (]) with the value of the current symbol
     jz .verify_depth # if equal, verify the depth of loop
 
-    incq %rdi # if not, increases %rdi (index)
+    jmp .next_char
 
-    cmpq code_mmap_size(%rip), %rdi
-    jz .not_closed_bracket_error
-
-    movq %rdi, tape_index_code(%rip) # updates variable
-    jmp .jmp_with_loop
+.inc_depth:
+    incb %bl
+    jmp .next_char
 
 .verify_depth:
-    cmpq $0, current_loop_depth(%rip)
-    jz interpret_loop
-    incb current_loop_depth(%rip)
+    testb %bl, %bl
+    jz .found_closing
 
-    decb current_loop_depth(%rip)
-    ret
+    incb %bl
+    jmp .next_char
+
+.next_char:
+    incq %rdi # current index
+    jmp .search_loop
+
+.found_closing:
+    movq %rdi, tape_index_code(%rip) # updates code index
+    jmp continue_loop
 
 cmd_csqbr:
     movq (%rsp), %rax # gets the index of the current open square bracket (in stack memory)
