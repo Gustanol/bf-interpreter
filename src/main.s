@@ -1,17 +1,25 @@
 .section .data
     # error messages
     expand_error_message: .ascii "Error: Maximum cells amount reached\n"
-    not_closed_bracket_error_message: .ascii "Error: Not closed bracket. Exiting with 1 error\n"
+    mismatch_bracket_error_message: .ascii "Error: Mismatch bracket\n"
     missing_value_error_message: .ascii "Error: Flag with no value\n"
     multiple_files_error_message: .ascii "Error: Multiple files given\n"
     no_input_error_message: .ascii "Error: No given code source\n"
     multiple_input_error_message: .ascii "Error: You must use a file or inline code, not both\n"
+    file_open_error_message: .ascii "Error: Fail to open file\n"
+    few_arguments_message: .ascii "Warning: Execution with no arguments"
+    unknown_flag_error_message: .ascii "Error: Not existing flag\n"
+
+    # help messages
+    f_flag_help_message: .ascii "-f: receives a file to interpret\n"
+    c_flag_help_message: .ascii "-c: receives inline code, without file\n"
+    m_flag_help_message: .ascii "-m: receives the limit cell amount\n"
+    h_flag_help_message: .ascii "-h: show help, bypassing other flags"
 
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
     tape_index_code: .quad 0 # current code mmap index
     current_cell: .quad 0 # current cell index
 
-    last_closed_square_bracket: .quad 0
     max_cell_mmap_size: .quad 2097152
 
     # constants
@@ -20,12 +28,12 @@
 # section used to declare a memory segment to a uninitialized static data
 .section .bss
     # initialize a jump table with 256 bytes
-    # therefore, the table will need 2048 bytes of memory (256*8)
+    # therefore, the table will need 2048 bits of memory (256*8)
     jmp_table: .space 2048
-    stat_buf: .space 144 # reserve 144 bytes
+    stat_buf: .space 144 # reserve 144 bits
     input_buffer: .byte 0
     code_mmap_size: .quad 0
-    bracket_depth: .quad 0
+    bracket_mmap_base: .quad 0
     
     .align 8
     tape_base_code: .quad 0 # base address of the code mmap
@@ -48,8 +56,8 @@ _start:
     decq %r12 # R12 doesn't count the program name as an argument
     addq $8, %r13 # argv[1]
 
-    cmpq $2, %r12 # compares with two
-    jl .error # if lower, return an error (few arguments)
+    cmpq $1, %r12 # compares with one
+    jl .few_arguments # if lower, return an error (few arguments)
 
     leaq jmp_table(%rip), %rdi
     leaq invalid_char(%rip), %rsi
@@ -95,7 +103,7 @@ _start:
     # therefore, to access a value stored within the table, we need to get its value from the address of the table itself
 
 parse_args_loop:
-    testq %r12, %r12
+    testq %r12, %r12 # verifies if argc is zero
     jz .args_done
 
     movq (%r13), %rdi # value of the current argument
@@ -179,15 +187,15 @@ m_flag:
 
     movq (%r13), %rdi
     call parse_number # call a label to convert a string to number
+
     movq %rax, max_cell_mmap_size(%rip)
     jmp .next_arg
 
 h_flag:
-    call print_help
-    jmp end_program
+    jmp print_help
 
 .unknown_flag:
-    jmp .error
+    jmp .unknown_flag_error
 
 .use_inline:
     movq inline_code(%rip), %rdi
@@ -246,7 +254,7 @@ load_file:
     syscall # used to call kernel to execute the given syscall
 
     testq %rax, %rax # AND operation to determine if the file was correct opened
-    js .error
+    js .file_open_error
     # JS (jump if sign) jumps to a specific label if the result of an operation (in this case, test) is negative
     # in here, it will jump to the `error` label
 
@@ -330,6 +338,66 @@ create_cell_mmap:
     js .error
 
     movq %rax, cell_mmap_base(%rip) # mapped cells address
+
+create_bracket_mmap:
+    movq code_mmap_size(%rip), %rsi
+    shlq $3, %rsi # code mmap size * 8
+
+    movq $9, %rax # sys_mmap
+    xorq %rdi, %rdi
+    movq $3, %rdx # PROT_READ | PROT_WRITE
+    movq $0x22, %r10 # MAP_ANONYMOUS
+    movq $-1, %r8 # no file descriptor
+    xorq %r9, %r9 # offset = 0
+    syscall
+
+    testq %rax, %rax
+    js .error
+
+    movq %rax, bracket_mmap_base(%rip) # mapped bracket base
+
+preprocess_brackets:
+    xorq %r12, %r12
+    movq %rsp, %r15
+
+    movq tape_base_code(%rip), %rsi
+
+.preprocess_loop:
+    movzx (%rsi, %r12, 1), %eax # current byte of the code
+
+    testb %al, %al # \0
+    jz .preprocess_loop_done
+
+    cmpb $'[', %al
+    jz .open_bracket
+
+    cmpb $']', %al
+    jz .close_bracket
+
+    jmp .next_byte
+
+.open_bracket:
+    pushq %r12
+    jmp .next_byte
+
+.close_bracket:
+    cmpq %rsp, %r15 # compares the current RSP with the saved one before loop
+    jz .mismatch_bracket_error
+
+    popq %rax
+    movq bracket_mmap_base(%rip), %rdi
+
+    movq %r12, (%rdi, %rax, 8) # moves the current index to the index in the stack
+    movq %rax, (%rdi, %r12, 8) # moves stack symbol index to the current one
+    jmp .next_byte
+
+.next_byte:
+    incq %r12
+    jmp .preprocess_loop
+
+.preprocess_loop_done:
+    cmpq %rsp, %r15
+    jne .mismatch_bracket_error
 
 interpret_loop:
     movq tape_index_code(%rip), %r15 # loads the current code index into %r15 register
@@ -417,10 +485,9 @@ cmd_comma:
     movq $1, %rdx # 1 byte
     syscall
 
-    movq cell_mmap_base(%rip), %rax # loads the base memory address of the cell mmap
-    movq current_cell(%rip), %rdi # loads the current cell
+    call calculate_cell_index
     movb input_buffer(%rip), %dl
-    movb %dl, (%rax, %rdi, 1) # saves the read buffer into the current cell value
+    movb %dl, (%rax) # saves the read buffer into the current cell value
     
     jmp continue_loop
 
@@ -431,86 +498,22 @@ cmd_osqbr:
     testb %cl, %cl
     jz .jmp_to_final_of_loop
 
-    incq bracket_depth(%rip)
-
-    movq tape_index_code(%rip), %rax
-    pushq %rax # push current symbol memory address ([) into stack memory
-
     jmp continue_loop
 
 .jmp_to_final_of_loop:
-    movq last_closed_square_bracket(%rip), %rax
-    movq $0, last_closed_square_bracket(%rip)
-
-    testq %rax, %rax
-    jnz .use_cached
-
-    jmp .find_closing_bracket
-
-.use_cached:
-    incq %rax # last closed square bracket index + 1 (next symbol)
-
-    cmpq code_mmap_size(%rip), %rax
-    jz end_program
+    movq bracket_mmap_base(%rip), %rdi
+    movq tape_index_code(%rip), %rsi
+    movq (%rdi, %rsi, 8), %rax
 
     movq %rax, tape_index_code(%rip)
-    jmp interpret_loop
-
-.find_closing_bracket:
-    xorb %bl, %bl # teporary variable to store the depth of the loop
-    movq tape_index_code(%rip), %rdi
-    incq %rdi # increases RDI to start loop in the next symbol, not '['
-
-.search_loop:
-    cmpq code_mmap_size(%rip), %rdi
-    jge .not_closed_bracket_error
-
-    movq tape_base_code(%rip), %rsi
-    movb (%rsi, %rdi, 1), %al # current symbol
-
-    testb %al, %al # verifies if the current symbol is EOF (\0)
-    jz .not_closed_bracket_error
-    
-    cmpb $0x5B, %al # [
-    je .inc_depth
-    
-    cmpb $0x5D, %al # compares 0x5D (]) with the value of the current symbol
-    jz .verify_depth # if equal, verify the depth of loop
-
-    jmp .next_char
-
-.inc_depth:
-    incb %bl
-    jmp .next_char
-
-.verify_depth:
-    testb %bl, %bl
-    jz .found_closing
-
-    incb %bl
-    jmp .next_char
-
-.next_char:
-    incq %rdi # current index
-    jmp .search_loop
-
-.found_closing:
-    movq %rdi, tape_index_code(%rip) # updates code index
     jmp continue_loop
 
 cmd_csqbr:
-    cmpq $0, bracket_depth(%rip)
-    jle .not_closed_bracket_error # depth <= 0 -> [ without ]
-
-    decq bracket_depth(%rip)
-
-    movq (%rsp), %rax # gets the index of the current open square bracket (in stack memory)
-    movq tape_index_code(%rip), %rdi # moves the current symbol index to %rdi
-    movq %rdi, last_closed_square_bracket(%rip) # stores it into a variable (it will be used to jump)
+    movq bracket_mmap_base(%rip), %rdi
+    movq tape_index_code(%rip), %rsi
+    movq (%rdi, %rsi, 8), %rax
 
     movq %rax, tape_index_code(%rip) # moves the opening index of the loop into code index
-
-    popq %rbx # pops the top value from stack memory
     jmp interpret_loop
 
 expand_right:
@@ -659,11 +662,29 @@ strlen:
 print_help:
     movq $1, %rax # sys_write
     movq $1, %rdi # fd: stdout
-    leaq expand_error_message(%rip), %rsi
-    movq $40, %rdx # 40 bytes
+    leaq f_flag_help_message(%rip), %rsi
+    movq $33, %rdx
     syscall
 
-    ret
+    movq $1, %rax
+    movq $1, %rdi
+    leaq c_flag_help_message(%rip), %rsi
+    movq $39, %rdx
+    syscall
+
+    movq $1, %rax
+    movq $1, %rdi
+    leaq m_flag_help_message(%rip), %rsi
+    movq $35, %rdx
+    syscall
+
+    movq $1, %rax
+    movq $1, %rdi
+    leaq h_flag_help_message(%rip), %rsi
+    movq $36, %rdx
+    syscall
+
+    jmp end_program
 
 # end program labels
 clean_mmaps:
@@ -698,11 +719,11 @@ invalid_char:
 
     jmp .error
 
-.not_closed_bracket_error:
+.mismatch_bracket_error:
     movq $1, %rax #sys_write
     movq $1, %rdi
-    leaq not_closed_bracket_error_message(%rip), %rsi
-    movq $48, %rdx
+    leaq mismatch_bracket_error_message(%rip), %rsi
+    movq $24, %rdx
     syscall
 
     jmp .error
@@ -738,15 +759,39 @@ invalid_char:
     movq $1, %rax #sys_write
     movq $1, %rdi
     leaq multiple_input_error_message(%rip), %rsi
-    movq $53, %rdx
+    movq $52, %rdx
+    syscall
+
+    jmp .error
+
+.file_open_error:
+    movq $1, %rax # sys_write
+    movq $1, %rdi
+    leaq file_open_error_message(%rip), %rsi
+    movq $25, %rdx
+    syscall
+
+    jmp .error
+
+.few_arguments:
+    movq $1, %rax # sys_write
+    movq $1, %rdi
+    leaq few_arguments_message(%rip), %rsi
+    movq $36, %rdx
+    syscall
+
+    jmp end_program
+
+.unknown_flag_error:
+    movq $1, %rax # sys_write
+    movq $1, %rdi
+    leaq unknown_flag_error_message(%rip), %rsi
+    movq $25, %rdx
     syscall
 
     jmp .error
 
 end_program:
-    cmpq $0, bracket_depth(%rip)
-    jnz .not_closed_bracket_error
-
     call clean_mmaps
 
     movq $1, %rax #sys_write
