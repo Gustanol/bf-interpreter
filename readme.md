@@ -1,5 +1,7 @@
 # BF interpreter
 
+[![wakatime](https://wakatime.com/badge/github/Gustanol/bf-interpreter.svg)](https://wakatime.com/badge/github/Gustanol/bf-interpreter)
+
 This is an efficient interpreter for the esoteric programming language Brainfuck written entirely in x86_64 Assembly!
 
 ### Project structure
@@ -60,8 +62,8 @@ Let's break the code and go through each block and feature:
 
 > [!IMPORTANT]
 > The arguments are stored in stack memory.
-> `RSP` represents the limit of the current stack frame
-> If we tried to get this variables after a label call, it wouldn't work, because `RBP` and `RSP` would point to the current stack frame.
+> `RSP` represents the limit of the current stack frame.
+> If we tried to get this variables after a label call, it wouldn't work because `RBP` and `RSP` would point to another stack frame.
 
 - Now, we load the memory address into `RDI` register;
 - `invalid_char` (any other symbol, except the 8 provided by BF)
