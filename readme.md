@@ -4,11 +4,13 @@ This is an efficient interpreter for the esoteric programming language Brainfuck
 
 ### Project structure
 
+```text
 bf-interpreter/
 ├── src/ # Source files (.s)
 ├── build/ # Build artifacts
 ├── Makefile # Build configuration
 └── README.md # This file
+```
 
 ---
 
@@ -56,10 +58,10 @@ Let's break the code and go through each block and feature:
 - `argv[i]` represents the `i` argument passed in
 - either `argc` and `argv[i]` has 8 bytes
 
-  > [!IMPORTANT]
-  > The arguments are stored in stack memory.
-  > `RSP` represents the limit of the current stack frame
-  > If we tried to get this variables after a label call, it wouldn't work, because `RBP` and `RSP` would point to the current stack frame.
+> [!IMPORTANT]
+> The arguments are stored in stack memory.
+> `RSP` represents the limit of the current stack frame
+> If we tried to get this variables after a label call, it wouldn't work, because `RBP` and `RSP` would point to the current stack frame.
 
 - Now, we load the memory address into `RDI` register;
 - `invalid_char` (any other symbol, except the 8 provided by BF)
@@ -78,11 +80,12 @@ Let's break the code and go through each block and feature:
     movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 = 0x158 + jmp_table base address
   ```
 
-  > [!IMPORTANT]
-  > `jmp_table` will represent the ASCII table. That's why it has 256 spaces
-  > We must multiply the symbol by 8 to determine the start correct value
-  > e.g.: 0x00 \* 8 = 0x00 -> will start at 0x00
-  - Now, we can call the pointer by symbol
+> [!IMPORTANT]
+> `jmp_table` will represent the ASCII table. That's why it has 256 spaces
+> We must multiply the symbol by 8 to determine the start correct value
+> e.g.: 0x00 \* 8 = 0x00 -> will start at 0x00
+
+- Now, we can call the pointer by symbol
 
 ---
 
@@ -156,8 +159,9 @@ Let's break the code and go through each block and feature:
   - `RDX`: will receive the base of code `mmap`
     - the sum between them will result in the current symbol of code
 
-    > [!NOTE]
-    > Note that if we multiply the value of the current symbol by 8, we will get the start offset of its pointer handler stored in `jmp_table`
+> [!NOTE]
+> Note that if we multiply the value of the current symbol by 8, we will get the start offset of its pointer handler stored in `jmp_table`
+
     - now, call the label by calling an indirect register (`*%rbp`)
 
 - `continue_loop`:
@@ -183,8 +187,8 @@ Let's break the code and go through each block and feature:
     - If so, the limit was reached and it must be increased
   - Increases the cell index and return to loop
 
-    > [!WARNING]
-    > The cell `mmap` starts with 4KB and can be increased up to 2MB by default
+> [!WARNING]
+> The cell `mmap` starts with 4KB and can be increased up to 2MB by default
 
 - `cmd_left`:
   - Almost the same as `cmd_right`, but decreases cell index instead of increase it
@@ -212,9 +216,10 @@ Let's break the code and go through each block and feature:
   - It gets the middle of the `mmap` (right part) and sums to it
   - Calls the syscall number 25 (SYS_mremap) to resize the cell `mmap` with it sum
 
-  > [!NOTE]
-  > The `mmap` will be increased to right
-  - Updates the base and the size of the global variables
+> [!NOTE]
+> The `mmap` will be increased to right
+
+- Updates the base and the size of the global variables
 
 - `expand_left`:
   - The same resize length
