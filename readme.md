@@ -166,6 +166,7 @@ Let's break the code and go through each block and feature:
 
 > [!NOTE]
 > Note that if we multiply the value of the current symbol by 8, we will get the start offset of its pointer handler stored in `jmp_table`
+
     - now, jump to the label by calling an indirect register (`*%rbp`)
 
 - `continue_loop`:
@@ -236,6 +237,38 @@ Let's break the code and go through each block and feature:
 
   - Make some updates
     - index = index + shift expand
+
+---
+
+### Challenges faced
+
+Initially, the loop logic was different.
+It used a cached system as well, but not too optimized as the current one.
+
+**Let's see it**
+
+Instead of use a global `mmap` for cache brackets, before it, it used a cache in runtime.
+
+When the current symbol was a `[` or a `]`, the logic was almost the same, with some differences:
+
+- `cmd_osqbr`:
+  - The index of the current bracket was pushed in stack memory
+  - It verified if the current cell value was zero
+    - If so, it jumped to a label to find the closing correct bracket (will be explained)
+
+- `cmd_csqbr`:
+  - Poped the value from stack and added it to code index
+  - Added the current index into a global variable called `last_closed_bracket` (the cache)
+  - Returned to loop
+    - It had the same behavior that the current logic
+
+- `.jmp_to_final_of_loop`:
+  - Verified if `last_closed_bracket` was zero
+    - If so, jumped to a label to find the correct closing bracket using a loop
+    - If it is not, used the value stored in `last_closed_bracket` to pass to the current code index
+  - Return to interpret loop
+
+In the beginning, it worked with low level of loops, but not with large files.
 
 ---
 
