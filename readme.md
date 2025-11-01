@@ -48,12 +48,12 @@ BF is based in **cells**, 8-bit sized memory space, to store values
 
 Let's break the code and go through each block and feature:
 
-`.section .data`: define global initialized variables
-`.section .text`: define global uninitialized variables
+- `.section .data`: define global initialized variables
+- `.section .text`: define global uninitialized variables
 
 ---
 
-`_start`: the start function
+- `_start`: the start function
 
 - It gets `argc` from the top of the stack memory and then the arguments
 - This variable represents the count of arguments passed to the program in its execution
@@ -72,17 +72,17 @@ Let's break the code and go through each block and feature:
 
 ---
 
-`.fill_loop`: used to fill `jmp_table` with the symbol handlers
+- `.fill_loop`: used to fill `jmp_table` with the symbol handlers
 
 - Starts filling all spaces with `invalid_char`
 - Increments 8 bits in `jmp_table` for each iteration
 - Calls loop that will be executed `RCX` times (256)
-  - In it, we store each handler in `RBX` and move its pointer into the correct offset of the `jmp_table`
+  - In it, we store each handler in `RBX` and move its pointer into the correct offset of the `jmp_table`<br>
 
-  ```gas
-  leaq cmd_plus(%rip), %rbx
-  movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 -> 0x158 + jmp_table base address
-  ```
+```gas
+leaq cmd_plus(%rip), %rbx
+movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 -> 0x158 + jmp_table base address
+```
 
 > [!IMPORTANT]
 > `jmp_table` will represent the ASCII table. That's why it has 256 spaces
@@ -93,7 +93,7 @@ Let's break the code and go through each block and feature:
 
 ---
 
-`parse_args_loop`: loop to parse all arguments passed in
+- `parse_args_loop`: loop to parse all arguments passed in
 
 - In each iteration, it decreases the value of `argc` (subtracted by 1 to not count program's name)
   - if this value reach zero, the loop will be finished
