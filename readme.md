@@ -312,7 +312,7 @@ make clean
 > [!TIP]
 > You can find some example code files in [here](https://github.com/fabianishere/brainfuck/tree/master/examples)
 
-<iframe width="560" height="315" src="raw.githubusercontent.com/Gustanol/bf-interpreter/media/videos/usage_example.mp4" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+[![Example](http://raw.githubusercontent.com/Gustanol/bf-interpreter/media/images/mandelbrot.png)](http://raw.githubusercontent.com/Gustanol/bf-interpreter/media/videos/usage_example.mp4)
 
 ---
 
