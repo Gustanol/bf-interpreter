@@ -312,7 +312,7 @@ make clean
 > [!TIP]
 > You can find some example code files in [here](https://github.com/fabianishere/brainfuck/tree/master/examples)
 
-[![Example](http://raw.githubusercontent.com/Gustanol/bf-interpreter/media/images/mandelbrot.png)](http://raw.githubusercontent.com/Gustanol/bf-interpreter/media/videos/usage_example.mp4)
+<video src='http://raw.githubusercontent.com/Gustanol/bf-interpreter/media/videos/usage_example.mp4' width=180/>
 
 ---
 
