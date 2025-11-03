@@ -45,6 +45,8 @@
     has_inline: .quad 0
     has_file: .quad 0
 
+    symbol_index_acumulator: .quad 0
+
 # instructions section
 .section .text
 .globl _start
@@ -407,6 +409,19 @@ interpret_loop:
     testq %rax, %rax
     jz end_program
 
+    cmpb $'+', %al
+    jz .increases_acumulator
+
+    cmpb $'-', %al
+    jz .increases_acumulator
+
+    cmpb $'<', %al
+    jz .increases_acumulator
+
+    cmpb $'>', %al
+    jz .increases_acumulator
+
+.continue_interpret_loop:
     leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
     movq (%rbp, %rax, 8), %rbp # gets the symbol handler label stored in jmp_table
 
@@ -416,6 +431,7 @@ interpret_loop:
     jmp *%rbp # call label (indirect register)
 
 continue_loop:
+    movq $0, symbol_index_acumulator(%rip)
     incq tape_index_code(%rip) # increases current code index
     movq tape_index_code(%rip), %r15
 
@@ -423,13 +439,39 @@ continue_loop:
     jl interpret_loop # if lower, call interpret_loop to make a loop
     jz end_program
 
+.increases_acumulator:
+    movq tape_index_code(%rip), %rcx
+    movq code_mmap_size(%rip), %rsi
+
+.increases_acumulator_loop:
+    movq %rcx, %rdi
+    movq %rdi, tape_index_code(%rip)
+
+    incq %rcx
+
+    cmpq %rsi, %rcx
+    jge .continue_interpret_loop
+
+    incq symbol_index_acumulator(%rip)
+
+    movq tape_base_code(%rip), %rdx
+    movq (%rdx, %rdi, 1), %rdi
+    movq (%rdx, %rcx, 1), %rbx
+
+    cmpb %dil, %bl
+    je .increases_acumulator_loop
+
+    jmp .continue_interpret_loop
+
 # operations labels
 cmd_plus:
-    incb (%rdi) # increases the value stored in %rax address
+    movq symbol_index_acumulator(%rip), %r9
+    addq %r9, (%rdi) # increases the value stored in %rax address
     jmp continue_loop
 
 cmd_minus:
-    decb (%rdi) # decreases the value stored in %rax address
+    movq symbol_index_acumulator(%rip), %r9
+    subq %r9, (%rdi) # decreases the value stored in %rax address
     jmp continue_loop
 
 cmd_dot:
@@ -455,7 +497,8 @@ cmd_right:
     cmpq %rdx, %rax # compares the current cell with the size of the mmap
     jge expand_right # if they're equal, jump to a label to expand the mmap to right
 
-    incq current_cell(%rip) # update current_cell global variable
+    movq symbol_index_acumulator(%rip), %rsi
+    addq %rsi, current_cell(%rip) # update current_cell global variable
   
     jmp continue_loop
 
@@ -474,7 +517,8 @@ cmd_left:
     # therefore, it is needed to expand to the left
     jge expand_left
 
-    decq current_cell(%rip) # update the current cell index
+    movq symbol_index_acumulator(%rip), %rsi
+    subq %rsi, current_cell(%rip) # update the current cell index
     
     jmp continue_loop
 
