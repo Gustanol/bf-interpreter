@@ -17,8 +17,6 @@
     h_flag_help_message: .ascii "-h: show help, bypassing other flags"
 
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
-    current_cell: .quad 0 # current cell index
-
     max_cell_mmap_size: .quad 2097152
 
     # constants
@@ -34,16 +32,14 @@
     code_mmap_size: .quad 0
     bracket_mmap_base: .quad 0
     
-    .align 8
+    .align 16
     tape_base_code: .quad 0 # base address of the code mmap
     cell_mmap_base: .quad 0 # it will store the current address base of the cell mmap
     shift_left_expand: .quad 0 # stores the value of the shift to use in the copy loop
-
     filename: .quad 0 # it will store the name of the file it will be open
     inline_code: .quad 0
     has_inline: .quad 0
     has_file: .quad 0
-
     symbol_index_acumulator: .quad 0
 
 # instructions section
@@ -401,7 +397,13 @@ preprocess_brackets:
     jne .mismatch_bracket_error
 
 initialize_interpreter:
-    call calculate_cell_index
+    xorq %rdx, %rdx
+    movq cell_mmap_size(%rip), %rax # loads the stored cell mmap size
+    movq $2, %rbx
+    divq %rbx # RDX:RAX / RBX (middle of the mmap)
+
+    addq $0, %rax # sums it to the %rax
+    addq cell_mmap_base(%rip), %rax # current cell address
     
     movq %rax, %r12
     movq tape_base_code(%rip), %r13
@@ -501,7 +503,7 @@ cmd_right:
     jge expand_right # if they're equal, jump to a label to expand the mmap to right
 
     movq symbol_index_acumulator(%rip), %rsi
-    addq %rsi, %r12 # update current_cell global variable
+    addq %rsi, %r12 # updates current cell
   
     jmp continue_loop
 
@@ -637,7 +639,7 @@ expand_left:
     movq %rdx, cell_mmap_size(%rip)
     movq %r8, cell_mmap_base(%rip)
     movq shift_left_expand(%rip), %rax
-    addq %rax, current_cell(%rip)
+    addq %rax, (%r12)
     
     jmp continue_loop
 
@@ -654,16 +656,6 @@ copy_memory:
     jnz .copy_loop
 
 .copy_done:
-    ret
-
-calculate_cell_index:
-    xorq %rdx, %rdx
-    movq cell_mmap_size(%rip), %rax # loads the stored cell mmap size
-    movq $2, %rbx
-    divq %rbx # RDX:RAX / RBX (middle of the mmap)
-
-    addq current_cell(%rip), %rax # sums it to the %rax
-    addq cell_mmap_base(%rip), %rax # current cell address
     ret
 
 parse_number:
@@ -846,7 +838,7 @@ end_program:
 
     movq $1, %rax #sys_write
     movq $1, %rdi
-    lea newline(%rip), %rsi
+    leaq newline(%rip), %rsi
     movq $1, %rdx
     syscall
 
