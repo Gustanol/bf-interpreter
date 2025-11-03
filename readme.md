@@ -2,7 +2,7 @@
 
 [![wakatime](https://wakatime.com/badge/github/Gustanol/bf-interpreter.svg)](https://wakatime.com/badge/github/Gustanol/bf-interpreter)
 
-This is an efficient interpreter for the esoteric programming language Brainfuck written entirely in x86_64 Assembly!
+This is an interpreter for the esoteric programming language Brainfuck written entirely in x86_64 Assembly!
 
 ### Project structure
 
