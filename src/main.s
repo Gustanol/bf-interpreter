@@ -17,7 +17,6 @@
     h_flag_help_message: .ascii "-h: show help, bypassing other flags"
 
     cell_mmap_size: .quad 4096 # it will be necessary to call `munmap`
-    tape_index_code: .quad 0 # current code mmap index
     current_cell: .quad 0 # current cell index
 
     max_cell_mmap_size: .quad 2097152
@@ -401,10 +400,16 @@ preprocess_brackets:
     cmpq %rsp, %r15
     jne .mismatch_bracket_error
 
+initialize_interpreter:
+    call calculate_cell_index
+    
+    movq %rax, %r12
+    movq tape_base_code(%rip), %r13
+    leaq jmp_table(%rip), %r14
+    movq $0, %r15
+
 interpret_loop:
-    movq tape_index_code(%rip), %r15 # loads the current code index into %r15 register
-    movq tape_base_code(%rip), %rdx # gets the base address value of the code storage mmap
-    movzx (%rdx, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
+    movzx (%r13, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
 
     testq %rax, %rax
     jz end_program
@@ -422,30 +427,28 @@ interpret_loop:
     jz .increases_acumulator
 
 .continue_interpret_loop:
-    leaq jmp_table(%rip), %rbp # gets the base value of the jmp_table (to call labels)
-    movq (%rbp, %rax, 8), %rbp # gets the symbol handler label stored in jmp_table
+    movq %r14, %rbx # gets the base value of the jmp_table (to call labels)
+    movq (%rbx, %rax, 8), %rbx # gets the symbol handler label stored in jmp_table
 
-    call calculate_cell_index # call a label to calculate the current cell
-    movq %rax, %rdi
+    movq %r12, %rdi
 
-    jmp *%rbp # call label (indirect register)
+    jmp *%rbx # call label (indirect register)
 
 continue_loop:
     movq $0, symbol_index_acumulator(%rip)
-    incq tape_index_code(%rip) # increases current code index
-    movq tape_index_code(%rip), %r15
+    incq %r15 # increases current code index
 
     cmpq code_mmap_size(%rip), %r15 # verifies if the the file limit was reached
     jl interpret_loop # if lower, call interpret_loop to make a loop
     jz end_program
 
 .increases_acumulator:
-    movq tape_index_code(%rip), %rcx
+    movq %r15, %rcx
     movq code_mmap_size(%rip), %rsi
 
 .increases_acumulator_loop:
     movq %rcx, %rdi
-    movq %rdi, tape_index_code(%rip)
+    movq %rdi, %r15
 
     incq %rcx
 
@@ -454,7 +457,7 @@ continue_loop:
 
     incq symbol_index_acumulator(%rip)
 
-    movq tape_base_code(%rip), %rdx
+    movq %r13, %rdx
     movq (%rdx, %rdi, 1), %rdi
     movq (%rdx, %rcx, 1), %rbx
 
@@ -487,7 +490,7 @@ cmd_dot:
     jmp continue_loop
 
 cmd_right:
-    call calculate_cell_index
+    movq %rdi, %rax
 
     movq cell_mmap_size(%rip), %rdi
     movq cell_mmap_base(%rip), %rsi
@@ -498,12 +501,12 @@ cmd_right:
     jge expand_right # if they're equal, jump to a label to expand the mmap to right
 
     movq symbol_index_acumulator(%rip), %rsi
-    addq %rsi, current_cell(%rip) # update current_cell global variable
+    addq %rsi, %r12 # update current_cell global variable
   
     jmp continue_loop
 
 cmd_left:
-    call calculate_cell_index
+    movq %rdi, %rax
 
     movq cell_mmap_size(%rip), %rdi
     movq cell_mmap_base(%rip), %rsi
@@ -518,7 +521,7 @@ cmd_left:
     jge expand_left
 
     movq symbol_index_acumulator(%rip), %rsi
-    subq %rsi, current_cell(%rip) # update the current cell index
+    subq %rsi, %r12 # update the current cell index
     
     jmp continue_loop
 
@@ -529,15 +532,13 @@ cmd_comma:
     movq $1, %rdx # 1 byte
     syscall
 
-    call calculate_cell_index
     movb input_buffer(%rip), %dl
-    movb %dl, (%rax) # saves the read buffer into the current cell value
+    movb %dl, (%r12) # saves the read buffer into the current cell value
     
     jmp continue_loop
 
 cmd_osqbr:
-    call calculate_cell_index # call a label to calculate the current cell
-    movzx (%rax), %rcx # current cell value
+    movzx (%r12), %rcx # current cell value
 
     testb %cl, %cl
     jz .jmp_to_final_of_loop
@@ -546,18 +547,18 @@ cmd_osqbr:
 
 .jmp_to_final_of_loop:
     movq bracket_mmap_base(%rip), %rdi
-    movq tape_index_code(%rip), %rsi
+    movq %r15, %rsi
     movq (%rdi, %rsi, 8), %rax
 
-    movq %rax, tape_index_code(%rip)
+    movq %rax, %r15
     jmp continue_loop
 
 cmd_csqbr:
     movq bracket_mmap_base(%rip), %rdi
-    movq tape_index_code(%rip), %rsi
+    movq %r15, %rsi
     movq (%rdi, %rsi, 8), %rax
 
-    movq %rax, tape_index_code(%rip) # moves the opening index of the loop into code index
+    movq %rax, %r15 # moves the opening index of the loop into code index
     jmp interpret_loop
 
 expand_right:
@@ -596,14 +597,17 @@ expand_left:
 
     movq %rax, shift_left_expand(%rip)
     addq cell_mmap_size(%rip), %rax # size of the new mmap
-    movq %rax, %r14 # copy
+    movq %rax, %rdx # copy
 
-    cmpq max_cell_mmap_size(%rip), %r14 # verify if the limit was reached
+    cmpq max_cell_mmap_size(%rip), %rdx # verify if the limit was reached
     jg .expand_error # if so, calls the error handler label
     
     movq $9, %rax # sys_mmap
     xorq %rdi, %rdi
-    movq %r14, %rsi # mmap size
+    movq %rdx, %rsi # mmap size
+    
+    pushq %rdx
+
     movq $3, %rdx # PROT_READ | PROT_WRITE
     movq $0x22, %r10 # MAP_ANONYMOUS
     movq $-1, %r8 # no file descriptor
@@ -613,9 +617,9 @@ expand_left:
     testq %rax, %rax
     js .error
 
-    movq %rax, %r15 # new mmap base
+    movq %rax, %r8 # new mmap base
 
-    movq %r15, %rdi # base of the new mmap (not updated yet), coming from "expand_left" label
+    movq %r8, %rdi # base of the new mmap (not updated yet), coming from "expand_left" label
     movq cell_mmap_base(%rip), %rsi # base of the old mmap
     addq shift_left_expand(%rip), %rdi # base + offset
     movq cell_mmap_size(%rip), %rcx # current cell mmap size
@@ -627,9 +631,11 @@ expand_left:
     movq cell_mmap_size(%rip), %rsi
     syscall
 
+    popq %rdx
+
     # updates
-    movq %r14, cell_mmap_size(%rip)
-    movq %r15, cell_mmap_base(%rip)
+    movq %rdx, cell_mmap_size(%rip)
+    movq %r8, cell_mmap_base(%rip)
     movq shift_left_expand(%rip), %rax
     addq %rax, current_cell(%rip)
     
@@ -734,7 +740,7 @@ print_help:
 clean_mmaps:
     # code mmap
     movq $11, %rax # sys_munmap
-    leaq tape_base_code(%rip), %rdi # mmap address
+    movq %r13, %rdi # mmap address
     movq code_mmap_size(%rip), %rsi # mmap size
     syscall
     
