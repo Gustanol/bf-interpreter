@@ -85,7 +85,7 @@ movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 -> 0x158 + jmp_table base address
 ```
 
 > [!IMPORTANT]
-> `jmp_table` will represent the ASCII table. That's why it has 256 spaces
+> `jmp_table` (pointed by `R14`) will represent the ASCII table. That's why it has 256 spaces
 > We must multiply the symbol by 8 to determine the start correct value
 > e.g.: 0x00 \* 8 = 0x00 -> will start at 0x00
 
@@ -180,9 +180,12 @@ movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 -> 0x158 + jmp_table base address
 **Symbol labels**
 
 - `cmd_plus` and `cmd_minus`:
-  - Increases and decreases, respectively, the value of the current cell
-    - This value is obtained by calling the label `calculate_cell_index`
-      - It only calculate the index considering the middle as the start
+  - Sums or subtracts, respectively, `symbol_index_acumulator` to/from the value of the current cell
+    - This value represents the acumulator for the same symbol
+      - e.g.: `++++++`: `+ 6`
+    - It is gotten when `interpret_loop` jump to a label to calculate it
+      - This label just counts the length of the sequence with same symbols
+  - This is much better than just increases/decreases for every symbol
 
 - `cmd_dot`:
   - Calls syscall number 1 (SYS_write) to print the value of the current cell
@@ -190,13 +193,13 @@ movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 -> 0x158 + jmp_table base address
 - `cmd_right`:
   - Compares if the current cell + mmap base is greater or equal than the size of the `mmap` itself
     - If so, the limit was reached and it must be increased
-  - Increases the cell index and return to loop
+  - Sums `symbol_index_acumulator` as well
 
 > [!WARNING]
 > The cell `mmap` starts with 4KB and can be increased up to 2MB by default
 
 - `cmd_left`:
-  - Almost the same as `cmd_right`, but decreases cell index instead of increase it
+  - Almost the same as `cmd_right`, but subtracts `symbol_index_acumulator` from cell index value
 
 - `cmd_comma`:
   - Calls the syscall number 0 (SYS_read) to read a byte from user and store it in the current cell value
@@ -311,10 +314,6 @@ make clean
 
 > [!TIP]
 > You can find some example code files in [here](https://github.com/fabianishere/brainfuck/tree/master/examples)
-
-https://github.com/user-attachments/assets/52e4b798-803b-43bd-8230-7d42119d0014
-
-https://github.com/user-attachments/assets/d6af6513-f9a0-4689-ac0b-e9d03e9997f9
 
 ---
 

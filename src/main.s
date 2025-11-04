@@ -443,28 +443,28 @@ continue_loop:
     jz end_program
 
 .increases_acumulator:
-    movq %r15, %rcx
+    movq %r15, %rcx # code index
     movq code_mmap_size(%rip), %rsi
 
 .increases_acumulator_loop:
-    movq %rcx, %rdi
-    movq %rdi, %r15
+    movq %rcx, %rdi # updates the "correct" symbol index
+    movq %rdi, %r15 # updates %r15 (global code index)
 
-    incq %rcx
+    incq %rcx # increases the counter
 
-    cmpq %rsi, %rcx
+    cmpq %rsi, %rcx # verifies if the counter has reached the limit of the code
     jge .continue_interpret_loop
 
-    incq symbol_index_acumulator(%rip)
+    incq symbol_index_acumulator(%rip) # increases it
 
-    movq %r13, %rdx
-    movq (%rdx, %rdi, 1), %rdi
-    movq (%rdx, %rcx, 1), %rbx
+    movq %r13, %rdx # code mmap base
+    movq (%rdx, %rdi, 1), %rdi # gets the current symbol
+    movq (%rdx, %rcx, 1), %rbx # gets the next symbol
 
-    cmpb %dil, %bl
+    cmpb %dil, %bl # return to loop if they're equal
     je .increases_acumulator_loop
 
-    jmp .continue_interpret_loop
+    jmp .continue_interpret_loop # jumps back to interpret loop
 
 # operations labels
 cmd_plus:
@@ -551,7 +551,7 @@ cmd_osqbr:
     cmpb $'-', %cl
     jnz continue_loop
 
-incb %cl
+    incb %cl
     cmpb $']', %cl
     jz .clean_cell
 
