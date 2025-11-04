@@ -35,11 +35,7 @@
     .align 16
     tape_base_code: .quad 0 # base address of the code mmap
     cell_mmap_base: .quad 0 # it will store the current address base of the cell mmap
-    shift_left_expand: .quad 0 # stores the value of the shift to use in the copy loop
     filename: .quad 0 # it will store the name of the file it will be open
-    inline_code: .quad 0
-    has_inline: .quad 0
-    has_file: .quad 0
     symbol_index_acumulator: .quad 0
 
 # instructions section
@@ -47,6 +43,8 @@
 .globl _start
 
 _start:
+    leaq jmp_table(%rip), %r14
+
     movq (%rsp), %r12 # argc
     leaq 8(%rsp), %r13 # argv[0] = program name
 
@@ -56,7 +54,7 @@ _start:
     cmpq $1, %r12 # compares with one
     jl .few_arguments # if lower, return an error (few arguments)
 
-    leaq jmp_table(%rip), %rdi
+    movq %r14, %rdi
     leaq invalid_char(%rip), %rsi
     movq $256, %rcx # loop counter
 
@@ -70,7 +68,7 @@ _start:
 
     # calculate the effective memory of jmp_table and pass it to %rax
 
-    leaq jmp_table(%rip), %rax
+    movq %r14, %rax
 
     leaq cmd_plus(%rip), %rbx
     movq %rbx, 0x2B*8(%rax) # 0x2B (+) * 8 = 0x158 + jmp_table address -> offset representing the character within the table
@@ -125,11 +123,11 @@ parse_args_loop:
     jmp .unknown_flag
 
 .positional_arg:
-    cmpb $0, has_file(%rip)
+    cmpb $0, %r11b # has file
     jne .error_multiple_files
 
     movq %rdi, filename(%rip)
-    movq $1, has_file(%rip)
+    movb $1, %r11b
     jmp .next_arg
 
 .next_arg:
@@ -138,15 +136,15 @@ parse_args_loop:
     jmp parse_args_loop
 
 .args_done:
-    movb has_inline(%rip), %al
-    orb has_file(%rip), %al
+    movb %r9b, %al # has inline
+    orb %r11b, %al
     jz .error_no_input
 
-    movb has_inline(%rip), %al
-    andb has_file(%rip), %al
+    movb %r9b, %al
+    andb %r11b, %al
     jnz .error_multiple_input
 
-    cmpb $1, has_inline(%rip)
+    cmpb $1, %r9b
     je .use_inline
     jmp load_file
 
@@ -158,9 +156,9 @@ c_flag:
     jz .missing_value
 
     movq (%r13), %rdi # flag value
-    movq %rdi, inline_code(%rip) # stores the code into the variable
+    movq %rdi, %r15 # stores the code into the variable
 
-    movb $1, has_inline(%rip) # true
+    movb $1, %r9b # true
     jmp .next_arg
 
 f_flag:
@@ -172,7 +170,7 @@ f_flag:
 
     movq (%r13), %rax
     movq %rax, filename(%rip) # stores the filename into 'filename' variable
-    movb $1, has_file(%rip) # makes it true
+    movb $1, %r11b # makes it true
     jmp .next_arg
 
 m_flag:
@@ -195,7 +193,7 @@ h_flag:
     jmp .unknown_flag_error
 
 .use_inline:
-    movq inline_code(%rip), %rdi
+    movq %r15, %rdi
     call strlen # call a label to convert a given string in integer
     movq %rax, code_mmap_size(%rip) # stores it into a global variable
 
@@ -214,7 +212,7 @@ h_flag:
 
     movq %rax, tape_base_code(%rip) # copy the base of the mmap into tape_base_code
     
-    movq inline_code(%rip), %rsi
+    movq %r15, %rsi
     movq %rax, %rdi
     movq code_mmap_size(%rip), %rcx
     call copy_inline_code_to_mmap # call a label to copy code from inline to mmap
@@ -407,9 +405,9 @@ initialize_interpreter:
     
     movq %rax, %r12
     movq tape_base_code(%rip), %r13
-    leaq jmp_table(%rip), %r14
     movq $0, %r15
 
+.align 64
 interpret_loop:
     movzx (%r13, %r15, 1), %rax # copies the sum between %rdx and %r15 (current symbol) into %rax
 
@@ -545,6 +543,22 @@ cmd_osqbr:
     testb %cl, %cl
     jz .jmp_to_final_of_loop
 
+    movq %r15, %rax
+    incq %rax
+
+    movzx (%r13, %rax, 1), %rcx
+
+    cmpb $'-', %cl
+    jnz continue_loop
+
+incb %cl
+    cmpb $']', %cl
+    jz .clean_cell
+
+    jmp continue_loop
+
+.clean_cell:
+    movq $0, (%r12)
     jmp continue_loop
 
 .jmp_to_final_of_loop:
@@ -597,7 +611,8 @@ expand_left:
     movq $2, %rdi
     divq %rdi # RDX:RAX / RDI (half of the mmap)
 
-    movq %rax, shift_left_expand(%rip)
+    movq %rax, %r11
+
     addq cell_mmap_size(%rip), %rax # size of the new mmap
     movq %rax, %rdx # copy
 
@@ -623,7 +638,7 @@ expand_left:
 
     movq %r8, %rdi # base of the new mmap (not updated yet), coming from "expand_left" label
     movq cell_mmap_base(%rip), %rsi # base of the old mmap
-    addq shift_left_expand(%rip), %rdi # base + offset
+    addq %r11, %rdi # base + offset
     movq cell_mmap_size(%rip), %rcx # current cell mmap size
 
     call copy_memory # call label to copy values into the new mmap, in correct offset
@@ -638,8 +653,7 @@ expand_left:
     # updates
     movq %rdx, cell_mmap_size(%rip)
     movq %r8, cell_mmap_base(%rip)
-    movq shift_left_expand(%rip), %rax
-    addq %rax, (%r12)
+    addq %r11, (%r12)
     
     jmp continue_loop
 
@@ -741,6 +755,12 @@ clean_mmaps:
     leaq cell_mmap_base(%rip), %rdi
     movq cell_mmap_size(%rip), %rsi
     syscall
+
+    movq $11, %rax
+    leaq bracket_mmap_base(%rip), %rdi
+    movq code_mmap_size(%rip), %rsi
+    syscall
+
     ret
 
 invalid_char:
