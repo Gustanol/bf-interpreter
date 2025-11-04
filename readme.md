@@ -315,6 +315,10 @@ make clean
 > [!TIP]
 > You can find some example code files in [here](https://github.com/fabianishere/brainfuck/tree/master/examples)
 
+https://github.com/user-attachments/assets/b0c433f5-4e1c-4059-a3f2-6544854da43c
+
+https://github.com/user-attachments/assets/ce86a01d-feb3-4fa9-b569-7c0c428b8606
+
 ---
 
 That's it!
